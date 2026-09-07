@@ -1,6 +1,6 @@
 @echo off
 setlocal
-set "ROOT=%~dp0"
+for %%I in ("%~dp0..\..") do set "ROOT=%%~fI\"
 call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul || exit /b 1
 cl /nologo /std:c++20 /EHsc /W4 /WX /DNR_DX11_GAME_TEST /I "%ROOT%src" /I "C:\tmp\imgui-source" /I "C:\tmp\reshade-source\include" ^
  /Fo"%ROOT%build\\" /Fe"%ROOT%build\regression_integrated_ui.exe" ^

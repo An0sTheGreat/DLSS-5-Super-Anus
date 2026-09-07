@@ -1,6 +1,6 @@
 @echo off
 setlocal
-set "ROOT=%~dp0"
+for %%I in ("%~dp0..\..") do set "ROOT=%%~fI\"
 if not exist "%ROOT%build\vulkan-headers-api\include\vulkan\vulkan.h" (
  echo Missing pinned Khronos Vulkan-Headers dependency. See implementation plan.
  exit /b 1

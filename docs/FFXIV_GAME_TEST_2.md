@@ -80,6 +80,6 @@ pair; never combine it with this unified testing build.
 - Driver tested: 616.56; native-runtime test fixtures use the existing local
   NVIDIA DLLs. Other drivers and long-session game behavior are not certified.
 
-Source commands: `build-dx11-experimental.cmd game-test`,
-`build-ffxiv-fixture.cmd`, `test-integrated-ui.cmd`, `test-api-transports.cmd`.
+Source commands: `scripts/build/build-dx11-experimental.cmd game-test`,
+`scripts/build/build-ffxiv-fixture.cmd`, `scripts/test/test-integrated-ui.cmd`, `scripts/test/test-api-transports.cmd`.
 Only the addon and documentation/license are packaged; vendor DLLs are not.

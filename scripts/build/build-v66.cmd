@@ -1,6 +1,6 @@
 @echo off
 setlocal
-set "ROOT=%~dp0"
+for %%I in ("%~dp0..\..") do set "ROOT=%%~fI\"
 call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul || exit /b 1
 "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\fxc.exe" /nologo /T cs_5_0 /E main /O3 /Fo "%ROOT%build\screenshot_copy.cso" "%ROOT%src\screenshot_copy.hlsl" || exit /b 1
 python "%ROOT%tools\binary_to_header.py" "%ROOT%build\screenshot_copy.cso" "%ROOT%src\screenshot_copy_shader.hpp" g_screenshot_copy_shader || exit /b 1

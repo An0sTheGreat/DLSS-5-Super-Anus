@@ -109,6 +109,6 @@ source-device recreation. This does not establish long-session game stability or
 fix every settings-related slowdown. Report failures rather than treating this
 as a general compatibility release.
 
-Source build: `build-dx11-experimental.cmd game-test`.
-UI regression: `test-integrated-ui.cmd`.
+Source build: `scripts/build/build-dx11-experimental.cmd game-test`.
+UI regression: `scripts/test/test-integrated-ui.cmd`.
 MinHook's license is included separately; no vendor runtime DLL is redistributed.

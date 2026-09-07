@@ -99,7 +99,7 @@ The current implementation notes and validation record are in
 [Cost Scaler v1](docs/NR_COST_SCALER_1.md). Build scripts are Windows developer
 harnesses and expect Visual Studio Build Tools, the Windows SDK, ReShade headers,
 Dear ImGui headers, the NVIDIA NGX/DLSS SDK, and MinHook. See
-[Building](docs/BUILDING.md).
+[Building](docs/BUILDING.md) and the [scripts index](scripts/README.md).
 
 ## Credits and licensing
 

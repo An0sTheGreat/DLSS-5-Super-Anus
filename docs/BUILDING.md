@@ -24,10 +24,10 @@ intentionally ignored and must not be committed.
 - `src/backends/dx12_backend.inl` — primary Neural Rendering backend.
 - `src/backends/dx11_native_bridge.inl` — experimental DX11 bridge.
 - `src/neural_resample.hlsl` — Cost Scaler reconstruction shader.
-- `build-v66.cmd` — current integrated build line used by v1.0.
-- `build-dx11-experimental.cmd` — DX11 bridge build/test harness.
-- `test-cost-scaler.cmd` — focused Cost Scaler GPU validation.
-- `test-api-transports.cmd` — API transport validation.
+- `scripts/build/build-v66.cmd` — current integrated build line used by v1.0.
+- `scripts/build/build-dx11-experimental.cmd` — DX11 bridge build/test harness.
+- `scripts/test/test-cost-scaler.cmd` — focused Cost Scaler GPU validation.
+- `scripts/test/test-api-transports.cmd` — API transport validation.
 
 Generated shader headers under `src` are committed so the source snapshot is
 self-contained. Regenerated objects, DLLs, executables, maps, SDK trees, test

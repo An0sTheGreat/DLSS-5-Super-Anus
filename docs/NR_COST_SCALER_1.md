@@ -97,9 +97,9 @@ Evidence directories: build/framegen-fixture-cost-scaler-1 (first candidate),
 build/framegen-fixture-cost-scaler-churn (final),
 build/api-native-capture-cost-scaler-final,
 build/final-screen-fixture-cost-scaler-{sdr-verified,hdr-final,timeout}.
-Commands: test-cost-scaler.cmd [warp], build-v66.cmd,
-build-dx11-experimental.cmd game-test, test-integrated-ui.cmd,
-test-auto-source.cmd, test-capture-policies.cmd, test-capture-ui.cmd.
+Commands: scripts/test/test-cost-scaler.cmd [warp], scripts/build/build-v66.cmd,
+scripts/build/build-dx11-experimental.cmd game-test, scripts/test/test-integrated-ui.cmd,
+scripts/test/test-auto-source.cmd, scripts/test/test-capture-policies.cmd, scripts/test/test-capture-ui.cmd.
 
 ## Limits and game acceptance
 

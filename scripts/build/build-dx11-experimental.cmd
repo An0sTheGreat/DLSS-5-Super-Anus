@@ -1,6 +1,6 @@
 @echo off
 setlocal
-set "ROOT=%~dp0"
+for %%I in ("%~dp0..\..") do set "ROOT=%%~fI\"
 set "NR_OUTPUT=%ROOT%build\dx11-experimental.addon64"
 set "NR_PROBE_DEFINE="
 set "NR_VALIDATION_FLAGS="

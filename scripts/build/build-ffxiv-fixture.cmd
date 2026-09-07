@@ -1,6 +1,6 @@
 @echo off
 setlocal
-set "ROOT=%~dp0"
+for %%I in ("%~dp0..\..") do set "ROOT=%%~fI\"
 call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul || exit /b 1
 cl /nologo /W4 /WX /EHsc /O2 /MT /std:c++17 /DNGXGYM_FFXIV_FIXTURE /I"%ROOT%build\dlss-sdk-api\include" ^
  /Fe:"%ROOT%build\ngxGym-ffxiv.exe" /Fo:"%ROOT%build\ngxGym-ffxiv.obj" "%ROOT%build\ngx-test-host\src\d3d11.cpp" ^
