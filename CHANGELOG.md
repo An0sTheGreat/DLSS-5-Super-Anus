@@ -2,6 +2,17 @@
 
 All notable public changes are documented here.
 
+## [Unreleased]
+
+## [1.0.2] - 2026-09-07
+
+- Fixed reduced Neural Rendering scale remaining on the native path after a
+  scale or hook transition in manual FrameGen mode.
+- Added a pass-aware transition fallback for Present and other final-color
+  routes that do not expose an advancing native-DLSS frame identifier.
+- Added FrameGen-scaled, transition-native, and scale-fallback diagnostics
+  without changing the selected hook method's color encoding.
+
 ## [1.0.1] - 2026-09-07
 
 - Reused fence-drained DX12 working textures when games rotate FrameGen input
@@ -37,5 +48,7 @@ All notable public changes are documented here.
 - Validated the Cost Scaler on NVIDIA hardware and WARP, plus focused DX11,
   lifetime, UI, hotkey, capture, and recovery fixtures.
 
+[Unreleased]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/releases/tag/v1.0.0

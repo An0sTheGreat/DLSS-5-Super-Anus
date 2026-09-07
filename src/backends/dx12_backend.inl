@@ -875,10 +875,11 @@ void maintain_resources()
         g_pooled_sets.load(), g_rebound_sets.load(), g_unsafe_sets.load(),
         g_retired_sets.load(), g_budget_fallbacks.load());
     log_message(reshade::log::level::info,
-        "NR V6.6 activity: enabled=%d scale=%d passes=%u eval=%u scaled=%u suppressed-while-off=%u gate=%u rejected=%u zero-frame=%u (cumulative; not GPU timings).",
+        "NR V6.6 activity: enabled=%d scale=%d passes=%u eval=%u scaled=%u fg-scaled=%u transition-native=%u scale-fallbacks=%u suppressed-while-off=%u gate=%u rejected=%u zero-frame=%u (cumulative; not GPU timings).",
         nr_enabled() ? 1 : 0, g_scale_percent.load(), *reinterpret_cast<volatile unsigned *>(
             reinterpret_cast<std::uintptr_t>(g_target_module) + 0x266FA4),
-        g_evaluation_calls.load(), g_scaled_calls.load(), g_off_evaluation_calls.load(),
+        g_evaluation_calls.load(), g_scaled_calls.load(), g_framegen_scaled_calls.load(),
+        g_transition_native_calls.load(), g_scale_fallback_calls.load(), g_off_evaluation_calls.load(),
         g_native_gate_calls.load(), g_native_gate_rejected.load(), g_native_zero_frame.load());
     log_message(reshade::log::level::info,
         "NR V6.6 features: tracked=%u released=%u upstream-retained=%llu per-pass-slots=%llu; feature VRAM is not included in texture budget.",
@@ -1236,8 +1237,20 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
     }
 
     const unsigned generation = g_scale_generation.load(std::memory_order_relaxed);
-    if (transition_uses_native(generation, g_native_last_frame.load(std::memory_order_relaxed)))
+    const auto framegen_frame = framegen_transition_frame();
+    const bool framegen_route = framegen_frame != 0;
+    const unsigned hook_method = static_cast<unsigned>(field<float>(g_target_module, 0x270FB0));
+    const unsigned evaluation_pass = field<unsigned>(input, 8);
+    const bool route_transition = framegen_route ?
+        transition_uses_native(generation, framegen_frame) :
+        (hook_method >= 3 ? transition_uses_native_pass(generation, evaluation_pass,
+            field<unsigned>(g_target_module, 0x266FA4)) :
+            transition_uses_native(generation, g_native_last_frame.load(std::memory_order_relaxed)));
+    if (route_transition)
+    {
+        g_transition_native_calls.fetch_add(1, std::memory_order_relaxed);
         return original(input);
+    }
     auto &site_generation = call_site == 1 ?
         g_logged_create_site_generation : g_logged_existing_site_generation;
     const bool trace_this_call =
@@ -1247,6 +1260,7 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
             "RenoDX Neural Resolution: [1/9 hook] entered scaled hook site=%u (%s); input=%p.",
             call_site, call_site == 1 ? "create/evaluate" : "existing-handle evaluate", input);
     auto native_fallback = [&](const char *reason) {
+        g_scale_fallback_calls.fetch_add(1, std::memory_order_relaxed);
         log_fallback_once(generation, reason);
         g_effective_scale.store(100, std::memory_order_relaxed);
         return original(input);
@@ -1366,6 +1380,8 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
         return native_fallback("compatible working textures could not be created or the cache is full");
     command_list_record->references.sets |= 1ull << (set - g_resource_sets.data());
     g_scaled_calls.fetch_add(1, std::memory_order_relaxed);
+    if (framegen_route)
+        g_framegen_scaled_calls.fetch_add(1, std::memory_order_relaxed);
     if (trace_this_call)
         log_text(reshade::log::level::info,
             "RenoDX Neural Resolution: [6/9 resources] working textures and persistent views are ready.");

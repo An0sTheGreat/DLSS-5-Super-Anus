@@ -3,6 +3,9 @@ import json
 from pathlib import Path
 from capture_test_identity import root, data, addon, embedded, symbols, section
 names = {'NR_FINAL_SUCCESS_RVA': 'g_successful_evaluations',
+         'NR_FINAL_SCALED_RVA': 'g_scaled_calls',
+         'NR_FINAL_FG_SCALED_RVA': 'g_framegen_scaled_calls',
+         'NR_FINAL_TRANSITION_NATIVE_RVA': 'g_transition_native_calls',
          'NR_FINAL_OFF_RVA': 'g_capture_off_until',
          'NR_FINAL_EVAL_RVA': 'scaled_evaluate_impl',
          'NR_TEST_SCALE_RVA': 'set_scale'}

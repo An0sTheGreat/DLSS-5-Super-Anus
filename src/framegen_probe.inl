@@ -47,7 +47,7 @@ extern "C" __declspec(dllexport) std::uint64_t observed_framegen_callback(
     const unsigned guard_before = tls ? tls[0x4B0] : 255;
     const auto before = g_evaluation_calls.load(std::memory_order_relaxed);
     const auto success_before = g_successful_evaluations.load();
-    g_fg_observer_calls.fetch_add(1,std::memory_order_relaxed);
+    const auto callback_id = g_fg_observer_calls.fetch_add(1,std::memory_order_relaxed) + 1;
     // Only FG-bearing calls participate; ordinary native SR/NR callbacks keep
     // their original behavior. Query through the same verified Get slot below.
     ID3D12Resource *fg_color = nullptr, *fg_hudless = nullptr;
@@ -60,7 +60,17 @@ extern "C" __declspec(dllexport) std::uint64_t observed_framegen_callback(
     }
     const bool other_auto = (fg_color || fg_hudless) && auto_source_enabled();
     if (other_auto && !g_auto_source.enter_other(native_application_frame())) return 1;
+    void *previous_transition_frame = nullptr;
+    bool framegen_transition = false;
+    if ((fg_color || fg_hudless) && g_framegen_transition_tls != TLS_OUT_OF_INDEXES)
+    {
+        previous_transition_frame = TlsGetValue(g_framegen_transition_tls);
+        framegen_transition = TlsSetValue(
+            g_framegen_transition_tls, reinterpret_cast<void *>(callback_id)) != FALSE;
+    }
     const auto result = original(command,feature,parameters);
+    if (framegen_transition)
+        TlsSetValue(g_framegen_transition_tls, previous_transition_frame);
     const auto after = g_evaluation_calls.load(std::memory_order_relaxed);
     if (other_auto) g_auto_source.leave_other(GetTickCount64(),g_successful_evaluations.load()!=success_before);
     const unsigned guard_after = tls ? tls[0x4B0] : 255;
@@ -94,7 +104,7 @@ extern "C" __declspec(dllexport) std::uint64_t observed_framegen_callback(
     log_message(reshade::log::level::info,
         "NR FG PROBE 2: focused=%u thread=%lu callback=%llu fg-inputs=%llu hook=%u passes=%u route=%u/%u/%u/%u guard=%u->%u eval-global=%u->%u index=%u index-result=0x%08x color=%p hudless=%p motion=%p depth=%p feature=0x%llx original-result=0x%llx.",
         foreground_process==GetCurrentProcessId()?1u:0u,
-        GetCurrentThreadId(),g_fg_observer_calls.load(),g_fg_parameter_calls.load(),
+        GetCurrentThreadId(),callback_id,g_fg_parameter_calls.load(),
         static_cast<unsigned>(field<float>(g_target_module,0x270FB0)),field<unsigned>(g_target_module,0x266FA4),
         static_cast<unsigned>(field<unsigned char>(g_target_module,0x27100C)),
         static_cast<unsigned>(field<unsigned char>(g_target_module,0x27100D)),

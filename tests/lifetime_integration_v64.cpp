@@ -102,6 +102,7 @@ int main()
     g_stream_signature = 0;
     g_transition_generation = 0;
     g_transition_native_frame = 0;
+    g_transition_pass_mask = 0;
     field<int>(g_target_module, kPresetIndexRva) = 1;
     field<unsigned>(g_target_module, 0x266FA4) = 1;
     field<float>(g_target_module, 0x270FB0) = 2.0f;
@@ -113,6 +114,21 @@ int main()
     assert(transition_uses_native(2, 100));
     assert(transition_uses_native(2, 100));
     assert(!transition_uses_native(2, 101));
+    assert(g_transition_generation == 0);
+    // Present and FrameGen-without-callback-context may have no advancing
+    // native SR frame ID. Keep every configured pass in the first group native,
+    // then release the transition on the first repeated pass.
+    g_transition_generation = 3;
+    g_transition_pass_mask = 0;
+    assert(transition_uses_native_pass(3, 0, 2));
+    assert(transition_uses_native_pass(3, 1, 2));
+    assert(!transition_uses_native_pass(3, 0, 2));
+    assert(g_transition_generation == 0);
+    assert(!transition_uses_native_pass(3, 1, 2));
+    g_transition_generation = 4;
+    g_transition_pass_mask = 0;
+    assert(transition_uses_native_pass(4, 0, 1));
+    assert(!transition_uses_native_pass(4, 0, 1));
     assert(g_transition_generation == 0);
     g_scale_generation = 1;
     g_stream_signature = 0;

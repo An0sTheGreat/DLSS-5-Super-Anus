@@ -25,6 +25,8 @@ static std::uintptr_t address(HMODULE module,const char *name) {
 }
 int main(int argc,char **argv) {
     const bool recovery = argc>1 && !strcmp(argv[1],"recovery");
+    char churn_value[8]={};
+    const bool scale_churn=GetEnvironmentVariableA("NR_TEST_SCALE_CHURN",churn_value,sizeof(churn_value))!=0;
     WNDCLASSW cls={}; cls.lpfnWndProc=DefWindowProcW; cls.hInstance=GetModuleHandleW(nullptr); cls.lpszClassName=L"NRFrameGenFixture";
     RegisterClassW(&cls);
     auto window=CreateWindowW(cls.lpszClassName,L"NR FrameGen callback test",WS_OVERLAPPEDWINDOW,100,100,360,240,nullptr,nullptr,cls.hInstance,nullptr);
@@ -69,6 +71,8 @@ int main(int argc,char **argv) {
     }
     auto event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     unsigned evaluated=0, native_recovered=0, late_fg_evals=0, healthy_fg_evals=0, manual_fg_evals=0;
+    unsigned scaled_begin=0, fg_scaled_begin=0, transition_begin=0, manual_fg_scaled=0;
+    bool counters_initialized=false;
     for (unsigned frame=0;frame<400;++frame) {
         MSG msg; while (PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
         check(allocator->Reset()); check(list->Reset(allocator,nullptr));
@@ -83,6 +87,13 @@ int main(int argc,char **argv) {
         auto module=GetModuleHandleW(L"renodx-dlss5-super-anus.addon64");
         if (module) {
             auto *success=reinterpret_cast<std::atomic_uint *>(address(module,"NR_FINAL_SUCCESS_RVA"));
+            auto *scaled=reinterpret_cast<std::atomic_uint *>(address(module,"NR_FINAL_SCALED_RVA"));
+            auto *fg_scaled=reinterpret_cast<std::atomic_uint *>(address(module,"NR_FINAL_FG_SCALED_RVA"));
+            auto *transition_native=reinterpret_cast<std::atomic_uint *>(address(module,"NR_FINAL_TRANSITION_NATIVE_RVA"));
+            if (!counters_initialized) {
+                scaled_begin=scaled->load(); fg_scaled_begin=fg_scaled->load();
+                transition_begin=transition_native->load(); counters_initialized=true;
+            }
             const auto before=success->load();
             using Callback=std::uint64_t (*)(void *,std::uint64_t,void *);
             auto callback=reinterpret_cast<Callback>(address(module,"NR_FG_CALLBACK_RVA"));
@@ -121,10 +132,14 @@ int main(int argc,char **argv) {
                 // return. Also exercise explicit manual FrameGen and Upscaled.
                 if (frame<40 || frame>=180) {
                     const auto after_native=success->load();
+                    const auto before_fg_scaled=fg_scaled->load();
                     callback(list,0x12345678,parameters);
                     const auto extra=success->load()-after_native;
                     if (frame<40) healthy_fg_evals+=extra;
-                    else if (manual_fg) manual_fg_evals+=extra;
+                    else if (manual_fg) {
+                        manual_fg_evals+=extra;
+                        manual_fg_scaled+=fg_scaled->load()-before_fg_scaled;
+                    }
                     else late_fg_evals+=extra;
                 }
             } else {
@@ -138,8 +153,7 @@ int main(int argc,char **argv) {
         check(swapchain->Present(0,0)); check(queue->Signal(fence,frame+1)); check(fence->SetEventOnCompletion(frame+1,event));
         if (WaitForSingleObject(event,10000)!=WAIT_OBJECT_0) return 8;
         NativeCaptureTestTrigger(frame+1);
-        char churn[8]={};
-        if (GetEnvironmentVariableA("NR_TEST_SCALE_CHURN",churn,sizeof(churn)) && (frame+1)%45==0) {
+        if (scale_churn && (frame+1)%45==0) {
             const unsigned scales[]={50,75,99,100,25,50,75,99};
             const auto index=(frame+1)/45-1;
             if (module && index<8) {
@@ -150,7 +164,11 @@ int main(int argc,char **argv) {
         Sleep(10);
     }
     printf("FrameGen callback fixture: actual NR evaluations=%u; synthetic FG parameters, no generated frames.\n",evaluated);
-    if (recovery) printf("Auto recovery: native NR=%u healthy FG NR=%u late FG NR=%u explicit manual FG NR=%u\n",native_recovered,healthy_fg_evals,late_fg_evals,manual_fg_evals);
+    const unsigned scaled_total=counters_initialized ? reinterpret_cast<std::atomic_uint *>(address(GetModuleHandleW(L"renodx-dlss5-super-anus.addon64"),"NR_FINAL_SCALED_RVA"))->load()-scaled_begin : 0;
+    const unsigned fg_scaled_total=counters_initialized ? reinterpret_cast<std::atomic_uint *>(address(GetModuleHandleW(L"renodx-dlss5-super-anus.addon64"),"NR_FINAL_FG_SCALED_RVA"))->load()-fg_scaled_begin : 0;
+    const unsigned transition_total=counters_initialized ? reinterpret_cast<std::atomic_uint *>(address(GetModuleHandleW(L"renodx-dlss5-super-anus.addon64"),"NR_FINAL_TRANSITION_NATIVE_RVA"))->load()-transition_begin : 0;
+    printf("Scale routing: scaled=%u FrameGen-scaled=%u transition-native=%u.\n",scaled_total,fg_scaled_total,transition_total);
+    if (recovery) printf("Auto recovery: native NR=%u healthy FG NR=%u late FG NR=%u explicit manual FG NR=%u scaled=%u\n",native_recovered,healthy_fg_evals,late_fg_evals,manual_fg_evals,manual_fg_scaled);
     if (sr_handle) ngx(NVSDK_NGX_D3D12_ReleaseFeature(sr_handle));
     if (sr_parameters) ngx(NVSDK_NGX_D3D12_DestroyParameters(sr_parameters));
     ngx(NVSDK_NGX_D3D12_DestroyParameters(parameters)); ngx(NVSDK_NGX_D3D12_Shutdown1(device));
@@ -158,5 +176,7 @@ int main(int argc,char **argv) {
     for (auto *resource:resources) resource->Release();
     if (sr_output) sr_output->Release();
     heap->Release(); swapchain->Release(); queue->Release(); device->Release(); factory->Release(); DestroyWindow(window);
-    return evaluated>=370 && (!recovery || (native_recovered>=370 && healthy_fg_evals>0 && late_fg_evals==0 && manual_fg_evals>0)) ? 0 : 9;
+    const bool scale_ok=!scale_churn || (scaled_total>0 && fg_scaled_total>0 && transition_total>0);
+    const bool recovery_ok=!recovery || (native_recovered>=370 && healthy_fg_evals>0 && late_fg_evals==0 && manual_fg_evals>0 && (!scale_churn || manual_fg_scaled>0));
+    return evaluated>=370 && scale_ok && recovery_ok ? 0 : 9;
 }

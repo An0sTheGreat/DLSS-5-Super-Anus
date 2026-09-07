@@ -132,6 +132,7 @@ std::atomic_uint g_logged_failure_generation = 0;
 std::atomic_uint64_t g_stream_signature = 0;
 std::atomic_uint g_transition_generation = 0;
 std::atomic_uint64_t g_transition_native_frame = 0;
+std::atomic_uint g_transition_pass_mask = 0;
 std::atomic_bool g_command_registry_warning_logged = false;
 std::atomic_bool g_hook_installed = true;
 HMODULE g_target_module = nullptr;
@@ -181,6 +182,9 @@ std::atomic_uint g_native_backward_frame = 0;
 std::atomic_uint g_evaluation_calls = 0;
 std::atomic_uint g_successful_evaluations = 0;
 std::atomic_uint g_scaled_calls = 0;
+std::atomic_uint g_framegen_scaled_calls = 0;
+std::atomic_uint g_transition_native_calls = 0;
+std::atomic_uint g_scale_fallback_calls = 0;
 std::atomic_uint g_off_evaluation_calls = 0;
 std::atomic_uint g_budget_fallbacks = 0;
 std::atomic_uint g_retired_sets = 0;
@@ -204,6 +208,16 @@ nr::backends::EvaluationDevice g_evaluation_device;
 nr::FrameTrace g_frame_trace;
 std::atomic_bool g_trace_requested = false;
 std::atomic_uint g_trace_status = 0; // idle / recording / draining
+// Nonzero only while the current thread is inside a native FrameGen callback.
+// Windows TLS is used because this injected no-CRT image does not link the
+// compiler TLS runtime. Every NR pass nested inside one callback sees the same
+// token, so transitions advance even while the native SR observer is idle.
+DWORD g_framegen_transition_tls = TLS_OUT_OF_INDEXES;
+std::uint64_t framegen_transition_frame()
+{
+    if (g_framegen_transition_tls == TLS_OUT_OF_INDEXES) return 0;
+    return reinterpret_cast<std::uintptr_t>(TlsGetValue(g_framegen_transition_tls));
+}
 void pump_frame_trace();
 
 bool nr_enabled()
@@ -284,6 +298,7 @@ __declspec(noinline) void set_scale(int scale)
         const unsigned generation = g_scale_generation.fetch_add(1, std::memory_order_relaxed) + 1;
         g_transition_generation.store(generation, std::memory_order_release);
         g_transition_native_frame.store(0, std::memory_order_release);
+        g_transition_pass_mask.store(0, std::memory_order_release);
         g_effective_scale.store(100, std::memory_order_relaxed);
         set_config_int("RenoDXNeuralResolution", "ScalePercent", scale);
         set_config_int("RenoDXNeuralResolution", "AppliedScalePercentV6", scale);
@@ -315,6 +330,7 @@ void observe_stream_configuration()
         const unsigned generation = g_scale_generation.fetch_add(1, std::memory_order_relaxed) + 1;
         g_transition_generation.store(generation, std::memory_order_release);
         g_transition_native_frame.store(0, std::memory_order_release);
+        g_transition_pass_mask.store(0, std::memory_order_release);
         g_effective_scale.store(100, std::memory_order_relaxed);
         log_message(reshade::log::level::info,
             "NR stream transition: generation=%u preset=%d passes=%u hook=%u; native path retained through the transition frame.",
@@ -339,6 +355,24 @@ bool transition_uses_native(unsigned generation, std::uint64_t frame)
         return true;
     unsigned expected = generation;
     g_transition_generation.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
+    return false;
+}
+
+bool transition_uses_native_pass(unsigned generation, unsigned pass, unsigned pass_count)
+{
+    if (g_transition_generation.load(std::memory_order_acquire) != generation)
+        return false;
+    pass_count = std::clamp(pass_count, 1u, 31u);
+    const unsigned bit = pass < 31 ? 1u << pass : 0x80000000u;
+    const unsigned expected = (1u << pass_count) - 1u;
+    const unsigned seen = g_transition_pass_mask.fetch_or(bit, std::memory_order_acq_rel);
+    // Keep every distinct pass in the first evaluation group native. A repeat
+    // after the configured pass set has been observed identifies the next
+    // group even when Present has no native-DLSS frame ID to advance.
+    if ((seen & bit) == 0 || (seen & expected) != expected)
+        return true;
+    unsigned active = generation;
+    g_transition_generation.compare_exchange_strong(active, 0, std::memory_order_acq_rel);
     return false;
 }
 
@@ -1030,6 +1064,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
     {
     case DLL_PROCESS_ATTACH:
     {
+        g_framegen_transition_tls = TlsAlloc();
         InitializeCriticalSection(&dx12::g_render_mutex);
         dx12::g_render_mutex_initialized = true;
         g_target_module = module;
@@ -1060,6 +1095,12 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             "NR COST SCALER 1: replaces legacy scaler; 25-100%, matched residual/direct, fence-retired native anchors. No additional hotkeys.");
         log_text(reshade::log::level::info,
             "NR RESOURCE POOL 1: shared device/pass history, four-set stream cap, fence-safe source rebinding and native transition frames enabled.");
+        if (g_framegen_transition_tls == TLS_OUT_OF_INDEXES)
+            log_text(reshade::log::level::warning,
+                "NR FRAMEGEN SCALE ROUTE 1: Windows TLS allocation failed; manual FrameGen scaling retains the native fallback path.");
+        else
+            log_text(reshade::log::level::info,
+                "NR FRAMEGEN SCALE ROUTE 1: callback-scoped transition frames enabled; reduced scaling preserves the selected hook's native color encoding.");
         load_control_keys();
         int configured_sharpness = 35;
         // Migrate even saved V6.3=true configurations away from unsafe replay.
@@ -1166,6 +1207,11 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         {
             DeleteCriticalSection(&dx12::g_render_mutex);
             dx12::g_render_mutex_initialized = false;
+        }
+        if (g_framegen_transition_tls != TLS_OUT_OF_INDEXES)
+        {
+            TlsFree(g_framegen_transition_tls);
+            g_framegen_transition_tls = TLS_OUT_OF_INDEXES;
         }
         break;
     }
