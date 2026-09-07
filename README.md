@@ -10,6 +10,12 @@ The current public release is **v1.0.0**. Download the packaged add-on from the
 > This is an unofficial community project. It is not affiliated with or
 > endorsed by NVIDIA, RenoDX, ReShade, or any game developer.
 
+> [!IMPORTANT]
+> **You must supply your own `nvngx_dlss.dll` and `nvngx_dlssnr.dll`.** These
+> NVIDIA runtime files are required but are not included or redistributed by
+> this project. Obtain them from a legitimate game, driver, or software
+> installation for which you have permission to use the files.
+
 ## Features
 
 - One add-on containing the RenoDX DLSS interface and Neural Rendering controls.
@@ -40,12 +46,14 @@ bundled here.
 
 1. Close the game.
 2. Install a 64-bit ReShade build with add-on support.
-3. Back up and remove any older or standalone version of this add-on.
-4. Extract `renodx-dlss5-super-anus.addon64` beside the game's ReShade DLL, or
+3. Supply compatible copies of `nvngx_dlss.dll` and `nvngx_dlssnr.dll`; they are
+   required and are not provided by this project.
+4. Back up and remove any older or standalone version of this add-on.
+5. Extract `renodx-dlss5-super-anus.addon64` beside the game's ReShade DLL, or
    into the add-on search directory configured by ReShade.
-5. Do not stack the standalone DLSSNR Cost Scaler proxy or companion with this
+6. Do not stack the standalone DLSSNR Cost Scaler proxy or companion with this
    build. If one replaced NVIDIA's DLL, restore the genuine DLL first.
-6. Launch the game and open the **RenoDX DLSS** tab.
+7. Launch the game and open the **RenoDX DLSS** tab.
 
 See [Installation](docs/INSTALLATION.md) for upgrade and troubleshooting notes.
 

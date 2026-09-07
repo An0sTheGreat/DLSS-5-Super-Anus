@@ -1,10 +1,18 @@
 # Installation
 
+> [!IMPORTANT]
+> **This add-on requires user-supplied `nvngx_dlss.dll` and
+> `nvngx_dlssnr.dll`.** NVIDIA runtime DLLs are not included or redistributed in
+> this repository or its releases. Obtain compatible files from a legitimate
+> game, driver, or software installation for which you have permission to use
+> them.
+
 ## Requirements
 
 - Windows 10 or Windows 11.
 - A 64-bit game and 64-bit ReShade build with add-on support.
 - A compatible NVIDIA GPU, driver, and DLSS setup.
+- User-supplied compatible `nvngx_dlss.dll` and `nvngx_dlssnr.dll` files.
 - A game that supplies usable native DLSS inputs. DirectX 12 is the primary
   path; DirectX 11 support uses the integrated experimental bridge.
 
@@ -12,11 +20,13 @@
 
 1. Close the game completely.
 2. Install ReShade with add-on support for the game's rendering API.
-3. Download `DLSS-5-Super-Anus-v1.0.0.zip` from the GitHub release.
-4. Extract `renodx-dlss5-super-anus.addon64` beside the ReShade DLL in the game
+3. Supply compatible `nvngx_dlss.dll` and `nvngx_dlssnr.dll` files from your own
+   legitimate installation. This project does not provide them.
+4. Download `DLSS-5-Super-Anus-v1.0.0.zip` from the GitHub release.
+5. Extract `renodx-dlss5-super-anus.addon64` beside the ReShade DLL in the game
    directory, or into the add-on search path configured in ReShade.
-5. Start the game, open ReShade, and select the **RenoDX DLSS** tab.
-6. Confirm that the add-on appears under ReShade's **Add-ons** tab and that the
+6. Start the game, open ReShade, and select the **RenoDX DLSS** tab.
+7. Confirm that the add-on appears under ReShade's **Add-ons** tab and that the
    Runtime API section reports the expected presentation API.
 
 ReShade's loader path varies by game. `dxgi.dll`, `d3d11.dll`, or another proxy
