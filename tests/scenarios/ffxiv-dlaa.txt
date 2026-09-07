@@ -1,0 +1,3 @@
+# Controlled FFXIV-shaped path: SDK EXE exports, EvaluateFeature_C, D24 depth.
+preset 5
+frames 216

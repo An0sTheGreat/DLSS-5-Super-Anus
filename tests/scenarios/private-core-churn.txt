@@ -1,0 +1,18 @@
+# Eight distinct source replacements; no retained old native hosts.
+frames 24
+recreate
+frames 24
+recreate
+frames 24
+recreate
+frames 24
+recreate
+frames 24
+recreate
+frames 24
+recreate
+frames 24
+recreate
+frames 24
+recreate
+frames 24
