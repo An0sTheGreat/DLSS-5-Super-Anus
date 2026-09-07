@@ -37,9 +37,9 @@
 #include "final_capture_policy.hpp"
 #include "auto_source_policy.hpp"
 #include "display_white.hpp"
+#include "scale_history.hpp"
 #ifdef NR_EXPERIMENTAL_DX11
 #include <intrin.h>
-#include "scale_history.hpp"
 #include <Psapi.h>
 #include <nvsdk_ngx_params.h>
 #include <MinHook.h>
@@ -129,6 +129,9 @@ std::atomic_uint g_logged_create_site_generation = 0;
 std::atomic_uint g_logged_existing_site_generation = 0;
 std::atomic_uint g_logged_success_generation = 0;
 std::atomic_uint g_logged_failure_generation = 0;
+std::atomic_uint64_t g_stream_signature = 0;
+std::atomic_uint g_transition_generation = 0;
+std::atomic_uint64_t g_transition_native_frame = 0;
 std::atomic_bool g_command_registry_warning_logged = false;
 std::atomic_bool g_hook_installed = true;
 HMODULE g_target_module = nullptr;
@@ -181,6 +184,8 @@ std::atomic_uint g_scaled_calls = 0;
 std::atomic_uint g_off_evaluation_calls = 0;
 std::atomic_uint g_budget_fallbacks = 0;
 std::atomic_uint g_retired_sets = 0;
+std::atomic_uint g_pooled_sets = 0;
+std::atomic_uint g_rebound_sets = 0;
 std::atomic_uint g_cached_mib = 0;
 std::atomic_uint g_cached_sets = 0;
 std::atomic_uint g_pinned_sets = 0;
@@ -276,12 +281,65 @@ __declspec(noinline) void set_scale(int scale)
     scale = std::clamp(scale, 25, 100);
     if (g_scale_percent.exchange(scale, std::memory_order_relaxed) != scale)
     {
-        g_scale_generation.fetch_add(1, std::memory_order_relaxed);
+        const unsigned generation = g_scale_generation.fetch_add(1, std::memory_order_relaxed) + 1;
+        g_transition_generation.store(generation, std::memory_order_release);
+        g_transition_native_frame.store(0, std::memory_order_release);
+        g_effective_scale.store(100, std::memory_order_relaxed);
         set_config_int("RenoDXNeuralResolution", "ScalePercent", scale);
         set_config_int("RenoDXNeuralResolution", "AppliedScalePercentV6", scale);
         log_message(reshade::log::level::info,
             "RenoDX Neural Resolution: applied %d%% scale.", scale);
     }
+}
+
+void observe_stream_configuration()
+{
+    if (g_target_module == nullptr) return;
+    const int preset = field<int>(g_target_module, kPresetIndexRva);
+    const unsigned passes = field<unsigned>(g_target_module, 0x266FA4);
+    const auto hook = std::bit_cast<std::uint32_t>(field<float>(g_target_module, 0x270FB0));
+    const std::uint64_t signature = 0x8000000000000000ull |
+        (static_cast<std::uint64_t>(hook) << 24) |
+        (static_cast<std::uint64_t>(passes & 0xFFFFu) << 8) |
+        static_cast<unsigned>(preset & 0xFF);
+    std::uint64_t previous = g_stream_signature.load(std::memory_order_acquire);
+    if (previous == 0)
+    {
+        g_stream_signature.compare_exchange_strong(previous, signature, std::memory_order_release);
+        return;
+    }
+    while (previous != signature)
+    {
+        if (!g_stream_signature.compare_exchange_weak(previous, signature, std::memory_order_acq_rel))
+            continue;
+        const unsigned generation = g_scale_generation.fetch_add(1, std::memory_order_relaxed) + 1;
+        g_transition_generation.store(generation, std::memory_order_release);
+        g_transition_native_frame.store(0, std::memory_order_release);
+        g_effective_scale.store(100, std::memory_order_relaxed);
+        log_message(reshade::log::level::info,
+            "NR stream transition: generation=%u preset=%d passes=%u hook=%u; native path retained through the transition frame.",
+            generation, preset, passes, static_cast<unsigned>(field<float>(g_target_module, 0x270FB0)));
+        break;
+    }
+}
+
+bool transition_uses_native(unsigned generation, std::uint64_t frame)
+{
+    if (g_transition_generation.load(std::memory_order_acquire) != generation)
+        return false;
+    const std::uint64_t token = frame != 0 ? frame : UINT64_MAX;
+    std::uint64_t transition_frame = g_transition_native_frame.load(std::memory_order_acquire);
+    if (transition_frame == 0)
+    {
+        g_transition_native_frame.compare_exchange_strong(
+            transition_frame, token, std::memory_order_acq_rel);
+        transition_frame = g_transition_native_frame.load(std::memory_order_acquire);
+    }
+    if (transition_frame == token)
+        return true;
+    unsigned expected = generation;
+    g_transition_generation.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
+    return false;
 }
 
 void pump_frame_trace()
@@ -666,6 +724,7 @@ void draw_hotkey_overlay(reshade::api::effect_runtime *runtime)
 #endif
     probe_optional_xefg_path();
     pump_frame_trace();
+    observe_stream_configuration();
     dx12::maintain_resources();
     dx12::capture::tick();
     static nr::ActivityMonitor activity;
@@ -746,6 +805,7 @@ void draw_hotkey_overlay(reshade::api::effect_runtime *runtime)
         }
     }
     commit_queued_preset(now);
+    observe_stream_configuration();
     if (pressed[2]) request_screenshot();
 
     if (g_overlay_message == OverlayMessage::none)
@@ -998,6 +1058,8 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         g_color_percent.store(std::clamp(configured_color, 0, 100));
         log_text(reshade::log::level::info,
             "NR COST SCALER 1: replaces legacy scaler; 25-100%, matched residual/direct, fence-retired native anchors. No additional hotkeys.");
+        log_text(reshade::log::level::info,
+            "NR RESOURCE POOL 1: shared device/pass history, four-set stream cap, fence-safe source rebinding and native transition frames enabled.");
         load_control_keys();
         int configured_sharpness = 35;
         // Migrate even saved V6.3=true configurations away from unsafe replay.

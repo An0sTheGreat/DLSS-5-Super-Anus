@@ -12,6 +12,8 @@ cl /nologo /std:c++20 /EHsc /O2 /W4 /WX /I "C:\tmp\reshade-source\include" /I "C
   /Fo"%ROOT%build\lifetime_integration_v64.obj" /Fe"%ROOT%build\lifetime_integration_v64.exe" ^
   "%ROOT%tests\lifetime_integration_v64.cpp" /link d3d12.lib dxgi.lib user32.lib ole32.lib windowscodecs.lib uuid.lib || exit /b 1
 "%ROOT%build\lifetime_integration_v64.exe" || exit /b 1
+cl /nologo /std:c++20 /EHsc /W4 /WX /Fo"%ROOT%build\scale_history.obj" /Fe"%ROOT%build\scale_history.exe" "%ROOT%tests\scale_history.cpp" || exit /b 1
+"%ROOT%build\scale_history.exe" || exit /b 1
 cl /nologo /std:c++20 /EHsc /W4 /I "%ROOT%src" /I "C:\tmp\imgui-source" ^
   /Fo"%ROOT%build\\" /Fe"%ROOT%build\regression_v63.exe" ^
   "%ROOT%tests\regression_v63.cpp" "C:\tmp\imgui-source\imgui.cpp" ^

@@ -96,6 +96,70 @@ int main()
     g_tracked_command_lists = {};
     puts("Production command registry: 4096 identities, bounded recycling, all-pinned rejection and PRE-Reset preservation passed.");
 
+    // Preset/pass/hook changes each create one stream epoch. Every evaluation
+    // in the first observed native frame stays on the original path; the next
+    // frame releases the guard without blocking or replaying work.
+    g_stream_signature = 0;
+    g_transition_generation = 0;
+    g_transition_native_frame = 0;
+    field<int>(g_target_module, kPresetIndexRva) = 1;
+    field<unsigned>(g_target_module, 0x266FA4) = 1;
+    field<float>(g_target_module, 0x270FB0) = 2.0f;
+    observe_stream_configuration();
+    assert(g_scale_generation == 1 && g_transition_generation == 0);
+    field<float>(g_target_module, 0x270FB0) = 3.0f;
+    observe_stream_configuration();
+    assert(g_scale_generation == 2 && g_transition_generation == 2);
+    assert(transition_uses_native(2, 100));
+    assert(transition_uses_native(2, 100));
+    assert(!transition_uses_native(2, 101));
+    assert(g_transition_generation == 0);
+    g_scale_generation = 1;
+    g_stream_signature = 0;
+
+    // Repeated source identities recycle one allocation after real queue-fence
+    // completion. Texture rotation does not create a new stream-history reset.
+    auto &pooled = g_resource_sets[0];
+    pooled.active = pooled.valid = true;
+    pooled.device = reinterpret_cast<reshade::api::device *>(1);
+    pooled.allocation_generation = 1;
+    pooled.allocated_bytes = 93ull << 20;
+    auto *stream_history = g_scale_history.find(1, 0);
+    assert(stream_history);
+    unsigned stream_resets = 0;
+    const unsigned retired_before_rotation = g_retired_sets.load();
+    for (unsigned identity = 1; identity <= 64; ++identity)
+    {
+        pooled.pooled = false;
+        pooled.valid = true;
+        pooled.source_color = {identity};
+        pooled.last_use = static_cast<ULONGLONG>(identity) * 3000;
+        pooled.queue_mask = 1;
+        if (stream_history->generation != 1)
+        {
+            ++stream_resets;
+            stream_history->generation = 1;
+        }
+        collect_resources_locked(pooled.last_use + 2000);
+        if (!pooled.pooled)
+        {
+            assert(pooled.retiring);
+            complete_fence(fences[0], g_tracked_queues[0].serial);
+            collect_resources_locked(pooled.last_use + 2001);
+        }
+        assert(pooled.active && pooled.pooled && !pooled.retiring);
+        assert(pooled.allocated_bytes == (93ull << 20));
+    }
+    assert(stream_resets == 1);
+    assert(g_retired_sets == retired_before_rotation);
+    assert(g_pooled_sets == 1 && g_cached_mib == 93);
+    g_scale_percent = 100;
+    collect_resources_locked(2002);
+    assert(!pooled.active && g_pooled_sets == 0);
+    g_scale_percent = 75;
+    g_resource_sets = {};
+    puts("Stream transition and fence-safe working-texture pooling passed.");
+
     auto feature = [](std::uintptr_t id) {
         ResourceSet set;
         set.active = set.valid = set.native_feature = true;

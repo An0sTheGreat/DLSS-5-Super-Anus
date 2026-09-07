@@ -2,6 +2,20 @@
 
 All notable public changes are documented here.
 
+## [1.0.1] - 2026-09-07
+
+- Reused fence-drained DX12 working textures when games rotate FrameGen input
+  resources, preventing continuous large texture allocation and retirement.
+- Limited each reduced-resolution evaluation stream to four working sets and
+  retained the native path when every safe slot is busy.
+- Moved Neural Rendering reset history from individual texture sets to the
+  device/pass stream, preventing periodic history resets and reduced-scale
+  flicker as source resources rotate.
+- Added a native transition frame for scale, preset, pass-count, and hook-method
+  changes so stale reduced-resolution output is never presented.
+- Added real-fence rotation, stream-history, and transition regressions while
+  preserving DX11, UI, screenshot, preset, and keybinding behavior.
+
 ## [1.0.0] - 2026-09-07
 
 - Unified RenoDX DLSS controls and Neural Rendering performance controls into a
@@ -23,4 +37,5 @@ All notable public changes are documented here.
 - Validated the Cost Scaler on NVIDIA hardware and WARP, plus focused DX11,
   lifetime, UI, hotkey, capture, and recovery fixtures.
 
+[1.0.1]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/releases/tag/v1.0.0

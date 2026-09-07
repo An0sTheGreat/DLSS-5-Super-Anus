@@ -7,6 +7,7 @@ struct ResourceSet
 {
     bool active = false;
     bool capture = false;
+    bool pooled = false;
     ID3D12Fence *capture_fence = nullptr;
     std::uint64_t capture_fence_value = 0, capture_queue = 0;
     bool valid = false;
@@ -22,6 +23,12 @@ struct ResourceSet
     std::uint32_t display_height = 0;
     std::uint32_t work_width = 0;
     std::uint32_t work_height = 0;
+    reshade::api::format color_format = reshade::api::format::unknown;
+    reshade::api::format output_format = reshade::api::format::unknown;
+    reshade::api::format motion_format = reshade::api::format::unknown;
+    reshade::api::format depth_format = reshade::api::format::unknown;
+    reshade::api::format ui_format = reshade::api::format::unknown;
+    reshade::api::format ui_alpha_format = reshade::api::format::unknown;
     unsigned reset_generation = 0;
     unsigned allocation_generation = 0;
     std::uint64_t allocated_bytes = 0;
@@ -92,9 +99,7 @@ std::array<TrackedCommandList, kMaximumTrackedCommandLists> g_tracked_command_li
 std::array<TrackedQueue, kMaximumQueues> g_tracked_queues = {};
 std::size_t g_command_slot_cursor = 0;
 std::atomic_uint g_command_slots_recycled = 0, g_command_slots_exhausted = 0;
-#ifdef NR_EXPERIMENTAL_DX11
 nr::ScaleHistory g_scale_history;
-#endif
 
 
 void collect_resources_locked(ULONGLONG now);
@@ -287,6 +292,41 @@ void destroy_resource_set(ResourceSet &set)
         if (resource.handle != 0)
             device->destroy_resource(resource);
     }
+}
+
+void release_source_bindings(ResourceSet &set)
+{
+    if (set.device != nullptr)
+        for (const auto view : {
+                set.source_color_srv, set.source_output_uav,
+                set.source_motion_srv, set.source_depth_srv,
+                set.source_ui_srv, set.source_ui_alpha_srv })
+            if (view.handle != 0)
+                set.device->destroy_resource_view(view);
+    set.source_color_srv = {};
+    set.source_output_uav = {};
+    set.source_motion_srv = {};
+    set.source_depth_srv = {};
+    set.source_ui_srv = {};
+    set.source_ui_alpha_srv = {};
+    set.source_color = {};
+    set.source_output = {};
+    set.source_motion = {};
+    set.source_depth = {};
+    set.source_ui = {};
+    set.source_ui_alpha = {};
+}
+
+void pool_resource_set(ResourceSet &set, ULONGLONG now)
+{
+    release_source_bindings(set);
+    set.pooled = true;
+    set.valid = true;
+    set.retiring = false;
+    set.unsafe_tracking = false;
+    set.queue_mask = 0;
+    set.retire_fences = {};
+    set.last_use = now;
 }
 
 std::uint64_t texture_allocation_size(reshade::api::device *device, std::uint32_t width,
@@ -553,12 +593,29 @@ void collect_resources_locked(ULONGLONG now)
     std::uint64_t recording_mask = 0;
     for (const auto &record : g_tracked_command_lists)
         if (record.active) recording_mask |= record.references.sets;
-    unsigned active = 0, pinned = 0, retiring = 0, unsafe = 0, features = 0;
+    unsigned active = 0, pinned = 0, retiring = 0, unsafe = 0, features = 0, pooled = 0;
     std::uint64_t bytes = 0;
     for (std::size_t i = 0; i < g_resource_sets.size(); ++i)
     {
         auto &set = g_resource_sets[i];
         if (!set.active) continue;
+        // Pooled sets own only private working textures. Their previous source
+        // descriptors have already drained behind real queue fences and can be
+        // rebound without reallocating the large textures.
+        if (set.pooled)
+        {
+            if (!nr_enabled() || g_scale_percent.load() >= 100 ||
+                set.allocation_generation != g_scale_generation.load())
+            {
+                destroy_resource_set(set);
+                g_retired_sets.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+            ++active;
+            ++pooled;
+            bytes += set.allocated_bytes;
+            continue;
+        }
         // The second final-screen image has not yet been recorded. Keep the
         // one bounded pair alive until completion or its 500 ms deadline.
         if (set.capture && capture::hold_final_pair(now)) {
@@ -619,9 +676,25 @@ void collect_resources_locked(ULONGLONG now)
                 }
                 else
                 {
-                    if (set.capture) capture::finish(set);
-                    destroy_resource_set(set);
-                    g_retired_sets.fetch_add(1, std::memory_order_relaxed);
+                    if (set.capture)
+                    {
+                        capture::finish(set);
+                        destroy_resource_set(set);
+                        g_retired_sets.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    else if (nr_enabled() && g_scale_percent.load() < 100 &&
+                        set.allocation_generation == g_scale_generation.load())
+                    {
+                        pool_resource_set(set, now);
+                        ++active;
+                        ++pooled;
+                        bytes += set.allocated_bytes;
+                    }
+                    else
+                    {
+                        destroy_resource_set(set);
+                        g_retired_sets.fetch_add(1, std::memory_order_relaxed);
+                    }
                     continue;
                 }
             }
@@ -639,6 +712,7 @@ void collect_resources_locked(ULONGLONG now)
     g_retiring_sets.store(retiring);
     g_unsafe_sets.store(unsafe);
     g_native_features.store(features);
+    g_pooled_sets.store(pooled);
 }
 
 void log_video_memory()
@@ -796,9 +870,10 @@ void maintain_resources()
     if (now < next_report) return;
     next_report = now + 5000;
     log_message(reshade::log::level::info,
-        "NR V6.6 cache: MiB=%u/512 sets=%u pinned=%u retiring=%u safety-held=%u retired=%u budget-fallbacks=%u.",
+        "NR V6.6 cache: MiB=%u/512 sets=%u pinned=%u retiring=%u pooled=%u rebound=%u safety-held=%u retired=%u budget-fallbacks=%u.",
         g_cached_mib.load(), g_cached_sets.load(), g_pinned_sets.load(), g_retiring_sets.load(),
-        g_unsafe_sets.load(), g_retired_sets.load(), g_budget_fallbacks.load());
+        g_pooled_sets.load(), g_rebound_sets.load(), g_unsafe_sets.load(),
+        g_retired_sets.load(), g_budget_fallbacks.load());
     log_message(reshade::log::level::info,
         "NR V6.6 activity: enabled=%d scale=%d passes=%u eval=%u scaled=%u suppressed-while-off=%u gate=%u rejected=%u zero-frame=%u (cumulative; not GPU timings).",
         nr_enabled() ? 1 : 0, g_scale_percent.load(), *reinterpret_cast<volatile unsigned *>(
@@ -844,6 +919,56 @@ bool create_source_view(
         reshade::api::resource_view_desc(view_format), &view);
 }
 
+bool bind_source_resources(
+    ResourceSet &set,
+    reshade::api::resource color,
+    reshade::api::resource output,
+    reshade::api::resource motion,
+    reshade::api::resource depth,
+    reshade::api::resource ui,
+    reshade::api::resource ui_alpha,
+    const reshade::api::resource_desc &color_desc,
+    const reshade::api::resource_desc &output_desc,
+    const reshade::api::resource_desc &motion_desc,
+    const reshade::api::resource_desc &depth_desc,
+    const reshade::api::resource_desc &ui_desc,
+    const reshade::api::resource_desc &ui_alpha_desc)
+{
+    reshade::api::resource_view color_srv = {}, output_uav = {};
+    reshade::api::resource_view motion_srv = {}, depth_srv = {};
+    reshade::api::resource_view ui_srv = {}, ui_alpha_srv = {};
+    const bool ok =
+        create_source_view(set.device, color, color_desc.texture.format, color_srv) &&
+        create_output_view(set.device, output, output_desc.texture.format, output_uav) &&
+        create_source_view(set.device, motion, motion_desc.texture.format, motion_srv) &&
+        create_source_view(set.device, depth, depth_desc.texture.format, depth_srv) &&
+        (!ui.handle || create_source_view(set.device, ui, ui_desc.texture.format, ui_srv)) &&
+        (!ui_alpha.handle || create_source_view(set.device, ui_alpha,
+            ui_alpha_desc.texture.format, ui_alpha_srv));
+    if (!ok)
+    {
+        for (const auto view : {color_srv, output_uav, motion_srv, depth_srv, ui_srv, ui_alpha_srv})
+            if (view.handle)
+                set.device->destroy_resource_view(view);
+        return false;
+    }
+    set.source_color = color;
+    set.source_output = output;
+    set.source_motion = motion;
+    set.source_depth = depth;
+    set.source_ui = ui;
+    set.source_ui_alpha = ui_alpha;
+    set.source_color_srv = color_srv;
+    set.source_output_uav = output_uav;
+    set.source_motion_srv = motion_srv;
+    set.source_depth_srv = depth_srv;
+    set.source_ui_srv = ui_srv;
+    set.source_ui_alpha_srv = ui_alpha_srv;
+    set.pooled = false;
+    set.valid = true;
+    return true;
+}
+
 bool valid_source_texture(
     const reshade::api::resource_desc &desc,
     std::uint32_t x,
@@ -876,30 +1001,87 @@ ResourceSet *find_or_create_resource_set(
     std::uint32_t work_width,
     std::uint32_t work_height)
 {
+    if (color_desc.type != reshade::api::resource_type::texture_2d ||
+        output_desc.type != reshade::api::resource_type::texture_2d ||
+        motion_desc.type != reshade::api::resource_type::texture_2d ||
+        depth_desc.type != reshade::api::resource_type::texture_2d ||
+        color_desc.texture.samples != 1 || output_desc.texture.samples != 1 ||
+        motion_desc.texture.samples != 1 || depth_desc.texture.samples != 1 ||
+        (ui.handle && (ui_desc.type != reshade::api::resource_type::texture_2d || ui_desc.texture.samples != 1)) ||
+        (ui_alpha.handle && (ui_alpha_desc.type != reshade::api::resource_type::texture_2d || ui_alpha_desc.texture.samples != 1)))
+        return nullptr;
+
+    const auto color_format = writable_format(color_desc.texture.format);
+    const auto output_format = writable_format(output_desc.texture.format);
+    const auto motion_format = writable_format(motion_desc.texture.format);
+    const auto depth_format = writable_format(depth_desc.texture.format);
+    const auto ui_format = ui.handle ? writable_format(ui_desc.texture.format) : reshade::api::format::unknown;
+    const auto ui_alpha_format = ui_alpha.handle ? writable_format(ui_alpha_desc.texture.format) : reshade::api::format::unknown;
+    if (color_format == reshade::api::format::unknown ||
+        output_format == reshade::api::format::unknown ||
+        motion_format == reshade::api::format::unknown ||
+        depth_format == reshade::api::format::unknown ||
+        (ui.handle && ui_format == reshade::api::format::unknown) ||
+        (ui_alpha.handle && ui_alpha_format == reshade::api::format::unknown))
+        return nullptr;
+
+    const unsigned generation = g_scale_generation.load();
+    const auto compatible_working_set = [&](const ResourceSet &set)
+    {
+        return set.active && !set.capture && !set.native_feature && set.device == device &&
+            set.allocation_generation == generation &&
+            set.display_width == display_width && set.display_height == display_height &&
+            set.work_width == work_width && set.work_height == work_height &&
+            set.color_format == color_format && set.output_format == output_format &&
+            set.motion_format == motion_format && set.depth_format == depth_format &&
+            set.ui_format == ui_format && set.ui_alpha_format == ui_alpha_format;
+    };
+
     for (auto &set : g_resource_sets)
     {
-        if (set.active && set.valid && !set.retiring && set.device == device &&
+        if (compatible_working_set(set) && set.valid && !set.pooled && !set.retiring &&
             set.source_color == color && set.source_output == output &&
             set.source_motion == motion && set.source_depth == depth &&
-            set.source_ui == ui && set.source_ui_alpha == ui_alpha &&
-            set.display_width == display_width && set.display_height == display_height &&
-            set.work_width == work_width && set.work_height == work_height)
+            set.source_ui == ui && set.source_ui_alpha == ui_alpha)
         {
-            set.allocation_generation = g_scale_generation.load();
             set.last_use = GetTickCount64();
             return &set;
         }
     }
 
-    collect_resources_locked(GetTickCount64());
+    const auto now = GetTickCount64();
+    collect_resources_locked(now);
+    // Rebind only a set whose previous command recordings and real queue fences
+    // have fully drained. The private working textures and their state survive;
+    // only the lightweight descriptors for the new game resources are replaced.
+    for (auto &set : g_resource_sets)
+        if (set.pooled && compatible_working_set(set) &&
+            bind_source_resources(set, color, output, motion, depth, ui, ui_alpha,
+                color_desc, output_desc, motion_desc, depth_desc, ui_desc, ui_alpha_desc))
+        {
+            set.last_use = now;
+            g_rebound_sets.fetch_add(1, std::memory_order_relaxed);
+            return &set;
+        }
+
+    // Bound one evaluation stream to four in-flight working sets. Dawnwalker
+    // rotates source handles under FrameGen; a fifth identity uses the original
+    // native path for that call instead of creating an allocation spiral.
+    constexpr unsigned kMaximumWorkingSetsPerStream = 4;
+    unsigned stream_sets = 0;
+    for (const auto &set : g_resource_sets)
+        if (compatible_working_set(set)) ++stream_sets;
+    if (stream_sets >= kMaximumWorkingSetsPerStream)
+    {
+        g_budget_fallbacks.fetch_add(1, std::memory_order_relaxed);
+        return nullptr;
+    }
+
     std::uint64_t requested_bytes = 0, used_bytes = 0;
     for (const auto &set : g_resource_sets)
         if (set.active) used_bytes += set.allocated_bytes;
-    for (const auto format : {writable_format(color_desc.texture.format),
-            writable_format(output_desc.texture.format), writable_format(motion_desc.texture.format),
-            writable_format(depth_desc.texture.format),
-            ui.handle ? writable_format(ui_desc.texture.format) : reshade::api::format::unknown,
-            ui_alpha.handle ? writable_format(ui_alpha_desc.texture.format) : reshade::api::format::unknown})
+    for (const auto format : {color_format, output_format, motion_format, depth_format,
+            ui_format, ui_alpha_format})
     {
         if (format == reshade::api::format::unknown) continue;
         const auto size = texture_allocation_size(device, work_width, work_height, format);
@@ -910,6 +1092,18 @@ ResourceSet *find_or_create_resource_set(
         writable_format(color_desc.texture.format));
     if (native_bytes == UINT64_MAX || native_bytes > kWorkingTextureBudget) return nullptr;
     requested_bytes += native_bytes;
+    // Incompatible pooled shapes are already fence-safe. Evict them before
+    // rejecting a current frame for budget pressure.
+    if (!allocation_fits(used_bytes, requested_bytes, kWorkingTextureBudget))
+        for (auto &candidate : g_resource_sets)
+        {
+            if (!candidate.pooled || compatible_working_set(candidate)) continue;
+            const auto released = candidate.allocated_bytes;
+            destroy_resource_set(candidate);
+            g_retired_sets.fetch_add(1, std::memory_order_relaxed);
+            used_bytes = released <= used_bytes ? used_bytes - released : 0;
+            if (allocation_fits(used_bytes, requested_bytes, kWorkingTextureBudget)) break;
+        }
     if (!allocation_fits(used_bytes, requested_bytes, kWorkingTextureBudget))
     {
         g_budget_fallbacks.fetch_add(1, std::memory_order_relaxed);
@@ -925,45 +1119,21 @@ ResourceSet *find_or_create_resource_set(
     set.active = true;
     set.valid = true;
     set.device = device;
-    set.source_color = color;
-    set.source_output = output;
-    set.source_motion = motion;
-    set.source_depth = depth;
-    set.source_ui = ui;
-    set.source_ui_alpha = ui_alpha;
     set.display_width = display_width;
     set.display_height = display_height;
     set.work_width = work_width;
     set.work_height = work_height;
+    set.color_format = color_format;
+    set.output_format = output_format;
+    set.motion_format = motion_format;
+    set.depth_format = depth_format;
+    set.ui_format = ui_format;
+    set.ui_alpha_format = ui_alpha_format;
     set.allocated_bytes = requested_bytes;
-    set.allocation_generation = g_scale_generation.load();
-    set.last_use = GetTickCount64();
+    set.allocation_generation = generation;
+    set.last_use = now;
 
-    reshade::api::format color_format = reshade::api::format::unknown;
-    reshade::api::format motion_format = reshade::api::format::unknown;
-    reshade::api::format depth_format = reshade::api::format::unknown;
-    reshade::api::format output_format = reshade::api::format::unknown;
-    reshade::api::format ui_format = reshade::api::format::unknown;
-    reshade::api::format ui_alpha_format = reshade::api::format::unknown;
-    if (color_desc.type != reshade::api::resource_type::texture_2d ||
-        output_desc.type != reshade::api::resource_type::texture_2d ||
-        motion_desc.type != reshade::api::resource_type::texture_2d ||
-        depth_desc.type != reshade::api::resource_type::texture_2d ||
-        color_desc.texture.samples != 1 || output_desc.texture.samples != 1 ||
-        motion_desc.texture.samples != 1 ||
-        depth_desc.texture.samples != 1)
-        goto fail;
-
-    color_format = writable_format(color_desc.texture.format);
-    motion_format = writable_format(motion_desc.texture.format);
-    depth_format = writable_format(depth_desc.texture.format);
-    output_format = writable_format(output_desc.texture.format);
-
-    if (!create_source_view(device, color, color_desc.texture.format, set.source_color_srv) ||
-        !create_output_view(device, output, output_desc.texture.format, set.source_output_uav) ||
-        !create_source_view(device, motion, motion_desc.texture.format, set.source_motion_srv) ||
-        !create_source_view(device, depth, depth_desc.texture.format, set.source_depth_srv) ||
-        !create_texture_and_views(device, display_width, display_height, color_format,
+    if (!create_texture_and_views(device, display_width, display_height, color_format,
             set.native_color, set.native_color_srv, set.native_color_uav) ||
         !create_texture_and_views(device, work_width, work_height, color_format,
             set.work_color, set.work_color_srv, set.work_color_uav) ||
@@ -977,24 +1147,19 @@ ResourceSet *find_or_create_resource_set(
 
     if (ui.handle != 0)
     {
-        if (ui_desc.type != reshade::api::resource_type::texture_2d || ui_desc.texture.samples != 1)
-            goto fail;
-        ui_format = writable_format(ui_desc.texture.format);
-        if (!create_source_view(device, ui, ui_desc.texture.format, set.source_ui_srv) ||
-            !create_texture_and_views(device, work_width, work_height, ui_format,
+        if (!create_texture_and_views(device, work_width, work_height, ui_format,
                 set.work_ui, set.work_ui_srv, set.work_ui_uav))
             goto fail;
     }
     if (ui_alpha.handle != 0)
     {
-        if (ui_alpha_desc.type != reshade::api::resource_type::texture_2d || ui_alpha_desc.texture.samples != 1)
-            goto fail;
-        ui_alpha_format = writable_format(ui_alpha_desc.texture.format);
-        if (!create_source_view(device, ui_alpha, ui_alpha_desc.texture.format, set.source_ui_alpha_srv) ||
-            !create_texture_and_views(device, work_width, work_height, ui_alpha_format,
+        if (!create_texture_and_views(device, work_width, work_height, ui_alpha_format,
                 set.work_ui_alpha, set.work_ui_alpha_srv, set.work_ui_alpha_uav))
             goto fail;
     }
+    if (!bind_source_resources(set, color, output, motion, depth, ui, ui_alpha,
+            color_desc, output_desc, motion_desc, depth_desc, ui_desc, ui_alpha_desc))
+        goto fail;
 
     return &set;
 
@@ -1071,6 +1236,8 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
     }
 
     const unsigned generation = g_scale_generation.load(std::memory_order_relaxed);
+    if (transition_uses_native(generation, g_native_last_frame.load(std::memory_order_relaxed)))
+        return original(input);
     auto &site_generation = call_site == 1 ?
         g_logged_create_site_generation : g_logged_existing_site_generation;
     const bool trace_this_call =
@@ -1186,10 +1353,8 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
 
     if (!create_pipeline(device))
         return native_fallback("compute pipeline creation failed");
-#ifdef NR_EXPERIMENTAL_DX11
     auto *history = g_scale_history.find(reinterpret_cast<std::uintptr_t>(device), field<unsigned>(input, 8));
     if (!history) return native_fallback("scale-history registry is full");
-#endif
     if (trace_this_call)
         log_text(reshade::log::level::info,
             "RenoDX Neural Resolution: [5/9 pipeline] compute pipeline is ready.");
@@ -1306,13 +1471,8 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
 
     // Experimental backend: rotating working textures share one NR history per
     // device/pass. Creating another texture slot must not reset that history.
-#ifdef NR_EXPERIMENTAL_DX11
     if (history->generation != generation)
-#else
-    if (set->reset_generation != generation)
-#endif
     {
-#ifdef NR_EXPERIMENTAL_DX11
         static unsigned reset_messages = 0;
         if (reset_messages++ < 32)
         {
@@ -1322,7 +1482,6 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
                 static_cast<unsigned>(set - g_resource_sets.data()), field<unsigned char>(input, 0x5D));
             log_text(reshade::log::level::info, diagnostic);
         }
-#endif
         field<std::uint8_t>(scaled_input.data(), 0x5D) = 1;
         set->reset_generation = generation;
     }
@@ -1334,9 +1493,7 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
             reshade::api::resource_usage::unordered_access);
         return native_fallback("the reduced Neural Rendering evaluation failed");
     }
-#ifdef NR_EXPERIMENTAL_DX11
     history->generation = generation; // Failed records never consume the reset.
-#endif
     g_effective_scale.store(scale_percent, std::memory_order_relaxed);
     if (trace_this_call)
         log_text(reshade::log::level::info,
@@ -1446,9 +1603,7 @@ void on_destroy_command_list(reshade::api::command_list *command_list)
 void on_destroy_device(reshade::api::device *device)
 {
     ScopedLock lock(g_render_mutex);
-#ifdef NR_EXPERIMENTAL_DX11
     g_scale_history.forget(reinterpret_cast<std::uintptr_t>(device));
-#endif
     g_evaluation_device.forget(reinterpret_cast<std::uintptr_t>(device));
     for (auto &set : g_resource_sets)
         if (set.active && set.device == device)
