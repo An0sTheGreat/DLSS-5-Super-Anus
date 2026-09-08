@@ -73,6 +73,7 @@ int main()
     field<int>(g_target_module, kPresetIndexRva) = 1;
     g_scale_percent = 75;
     g_scale_generation = 1;
+    g_stream_generation = 1;
 
     // Exercise the production registry with more live identities than slots.
     // Synthetic pointers are identities only: claim never dereferences them.
@@ -107,10 +108,11 @@ int main()
     field<unsigned>(g_target_module, 0x266FA4) = 1;
     field<float>(g_target_module, 0x270FB0) = 2.0f;
     observe_stream_configuration();
-    assert(g_scale_generation == 1 && g_transition_generation == 0);
+    assert(g_scale_generation == 1 && g_stream_generation == 1 && g_transition_generation == 0);
     field<float>(g_target_module, 0x270FB0) = 3.0f;
     observe_stream_configuration();
-    assert(g_scale_generation == 2 && g_transition_generation == 2);
+    assert(g_scale_generation == 1 && g_stream_generation == 2 && g_transition_generation == 2);
+    assert(g_quiesce_generation == 0); // Stream changes must not retire native features.
     assert(transition_uses_native(2, 100));
     assert(transition_uses_native(2, 100));
     assert(!transition_uses_native(2, 101));
@@ -131,6 +133,7 @@ int main()
     assert(!transition_uses_native_pass(4, 0, 1));
     assert(g_transition_generation == 0);
     g_scale_generation = 1;
+    g_stream_generation = 1;
     g_stream_signature = 0;
 
     // Repeated source identities recycle one allocation after real queue-fence
@@ -169,6 +172,9 @@ int main()
     assert(stream_resets == 1);
     assert(g_retired_sets == retired_before_rotation);
     assert(g_pooled_sets == 1 && g_cached_mib == 93);
+    g_scale_percent = 125;
+    collect_resources_locked(2001);
+    assert(pooled.active && pooled.pooled); // Supersampled NR is still a managed scaled path.
     g_scale_percent = 100;
     collect_resources_locked(2002);
     assert(!pooled.active && g_pooled_sets == 0);

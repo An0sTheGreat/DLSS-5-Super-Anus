@@ -4,7 +4,10 @@ from pathlib import Path
 from capture_test_identity import root, data, addon, embedded, symbols, section
 names = {'NR_FINAL_SUCCESS_RVA': 'g_successful_evaluations',
          'NR_FINAL_SCALED_RVA': 'g_scaled_calls',
+         'NR_FINAL_FG_BYPASS_RVA': 'g_framegen_transparent_bypass',
          'NR_FINAL_FG_SCALED_RVA': 'g_framegen_scaled_calls',
+         'NR_FINAL_PREWARM_RVA': 'g_prewarmed_sets',
+         'NR_FINAL_RETIRED_RVA': 'g_retired_sets',
          'NR_FINAL_TRANSITION_NATIVE_RVA': 'g_transition_native_calls',
          'NR_FINAL_OFF_RVA': 'g_capture_off_until',
          'NR_FINAL_EVAL_RVA': 'scaled_evaluate_impl',

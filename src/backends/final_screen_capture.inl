@@ -32,7 +32,7 @@ void final_screen(reshade::api::effect_runtime *runtime)
         log_message(reshade::log::level::warning,"NR final-screen capture cancelled: %s",message);
     };
     if (phase == 2 && (!nr_enabled() || final_preset != field<int>(g_target_module,kPresetIndexRva) ||
-        final_generation != g_scale_generation.load() || final_hook != field<float>(g_target_module,0x270FB0))) {
+        final_generation != g_stream_generation.load() || final_hook != field<float>(g_target_module,0x270FB0))) {
         fail("Settings changed during capture; no pair saved."); return;
     }
     if (phase == 2 && !final_timing.ready(now,g_capture_skipped.load(),g_successful_evaluations.load())) return;
@@ -87,7 +87,7 @@ void final_screen(reshade::api::effect_runtime *runtime)
         slot = static_cast<std::size_t>(set-g_resource_sets.data()); watched_device = device; watched_command = cmd;
         final_runtime = runtime; final_window = window; capture_hdr = true; capture_white_nits = white;
         final_preset = field<int>(g_target_module,kPresetIndexRva); final_hook = field<float>(g_target_module,0x270FB0);
-        final_generation = g_scale_generation.load(); pair_complete = false;
+        final_generation = g_stream_generation.load(); pair_complete = false;
     } else if (slot == SIZE_MAX || watched_device != device || width != desc.texture.width || height != desc.texture.height ||
         formats[1] != fmt || encodings[1] != encoding) { fail("Backbuffer changed during capture; no pair saved."); return; }
     auto &set = g_resource_sets[slot];

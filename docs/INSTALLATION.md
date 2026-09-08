@@ -25,7 +25,7 @@
 4. Download the latest `DLSS-5-Super-Anus-v*.zip` package from GitHub Releases.
 5. Extract `renodx-dlss5-super-anus.addon64` beside the ReShade DLL in the game
    directory, or into the add-on search path configured in ReShade.
-6. Start the game, open ReShade, and select the **RenoDX DLSS** tab.
+6. Start the game, open ReShade, and select the **RenoDX DLSS S_A** tab.
 7. Confirm that the add-on appears under ReShade's **Add-ons** tab and that the
    Runtime API section reports the expected presentation API.
 
@@ -38,7 +38,13 @@ proxy names.
 1. Close the game.
 2. Back up the currently installed `.addon64` file and `ReShade.ini`.
 3. Replace the old add-on with the new release file.
-4. Keep only one copy of this add-on in ReShade's search paths.
+4. Keep only one copy of this add-on in ReShade's search paths, using the
+   canonical filename `renodx-dlss5-super-anus.addon64`.
+
+Do **not** delete `ReShade.ini` during a normal update. It contains ReShade-wide
+settings plus the add-on's saved presets, controls, screenshot mode, and Cost
+Scaler values. If configuration troubleshooting is necessary, back it up and
+reset only the `[RenoDXNeuralResolution]` section as a temporary A/B test.
 
 Saved presets, key bindings, screenshot mode, and Cost Scaler values live in
 ReShade configuration and should survive replacement.
@@ -54,12 +60,15 @@ ReShade configuration and should survive replacement.
 
 ## Basic verification
 
-After launch, search `ReShade.log` for `NR COST SCALER 1:`. Then:
+After launch, search `ReShade.log` for `NR BUILD ID: 1.0.3` and
+`NR COST SCALER 2:`. Then:
 
 1. Apply 75% with Matched Residual selected.
 2. Toggle Neural Rendering with F6.
 3. Cycle all three presets with F7.
 4. Return to 100% and confirm the reconstruction controls become unavailable.
+5. Use =/+ and -/_ to change the pass count and confirm the upper-right overlay.
+6. Optionally apply 125% and confirm the game output resolution remains unchanged.
 
 If the status stays at **Waiting**, confirm the game is actively producing a
 supported native DLSS input. Try the **Upscaled** hook mode for diagnosis. Games

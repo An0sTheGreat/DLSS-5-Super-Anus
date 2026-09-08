@@ -38,6 +38,9 @@
 #include "auto_source_policy.hpp"
 #include "display_white.hpp"
 #include "scale_history.hpp"
+#include "neural_scale_policy.hpp"
+#include "pass_count_policy.hpp"
+#include "multipass_stability_policy.hpp"
 #ifdef NR_EXPERIMENTAL_DX11
 #include <intrin.h>
 #include <Psapi.h>
@@ -125,6 +128,7 @@ std::atomic_int g_resolve_mode = 1;
 std::atomic_int g_transfer_percent = 100;
 std::atomic_int g_color_percent = 100;
 std::atomic_uint g_scale_generation = 1;
+std::atomic_uint g_stream_generation = 1;
 std::atomic_uint g_logged_create_site_generation = 0;
 std::atomic_uint g_logged_existing_site_generation = 0;
 std::atomic_uint g_logged_success_generation = 0;
@@ -133,6 +137,7 @@ std::atomic_uint64_t g_stream_signature = 0;
 std::atomic_uint g_transition_generation = 0;
 std::atomic_uint64_t g_transition_native_frame = 0;
 std::atomic_uint g_transition_pass_mask = 0;
+std::atomic_uint g_quiesce_generation = 0;
 std::atomic_bool g_command_registry_warning_logged = false;
 std::atomic_bool g_hook_installed = true;
 HMODULE g_target_module = nullptr;
@@ -158,10 +163,12 @@ enum class OverlayMessage : std::uint32_t
     preset_1,
     preset_2,
     preset_3,
+    pass_count,
 };
 
 OverlayMessage g_overlay_message = OverlayMessage::none;
 ULONGLONG g_overlay_started = 0;
+std::atomic_uint g_overlay_pass_count = 1;
 int g_last_preset = 1;
 bool g_preset_persistence_initialized = false;
 std::atomic_int g_queued_preset = -1;
@@ -190,6 +197,9 @@ std::atomic_uint g_budget_fallbacks = 0;
 std::atomic_uint g_retired_sets = 0;
 std::atomic_uint g_pooled_sets = 0;
 std::atomic_uint g_rebound_sets = 0;
+std::atomic_uint g_prewarmed_sets = 0;
+std::atomic_uint g_partial_group_suppressed = 0;
+std::atomic_ullong g_framegen_transparent_bypass = 0;
 std::atomic_uint g_cached_mib = 0;
 std::atomic_uint g_cached_sets = 0;
 std::atomic_uint g_pinned_sets = 0;
@@ -197,6 +207,11 @@ std::atomic_uint g_retiring_sets = 0;
 std::atomic_uint g_unsafe_sets = 0;
 std::atomic_uint g_native_features = 0;
 std::atomic_uint g_native_features_retired = 0;
+std::atomic_uint g_memory_native_groups = 0;
+std::atomic_uint g_quiesce_native_calls = 0;
+std::atomic_ullong g_local_memory_usage = 0;
+std::atomic_ullong g_local_memory_budget = 0;
+std::atomic_ullong g_adaptive_cache_limit = kWorkingTextureBudget;
 std::atomic_int g_effective_scale = 100;
 bool g_lifetime_events_registered = false;
 std::atomic_flag g_preset_transaction_active = ATOMIC_FLAG_INIT;
@@ -213,10 +228,24 @@ std::atomic_uint g_trace_status = 0; // idle / recording / draining
 // compiler TLS runtime. Every NR pass nested inside one callback sees the same
 // token, so transitions advance even while the native SR observer is idle.
 DWORD g_framegen_transition_tls = TLS_OUT_OF_INDEXES;
+struct FrameGenTransitionContext
+{
+    std::uint64_t source_frame = 0;
+    std::uint64_t callback = 0;
+    unsigned multi_frame_index = UINT_MAX;
+    bool index_valid = false;
+};
 std::uint64_t framegen_transition_frame()
 {
     if (g_framegen_transition_tls == TLS_OUT_OF_INDEXES) return 0;
-    return reinterpret_cast<std::uintptr_t>(TlsGetValue(g_framegen_transition_tls));
+    const auto *context = static_cast<const FrameGenTransitionContext *>(TlsGetValue(g_framegen_transition_tls));
+    return context ? (context->source_frame != 0 ? context->source_frame : context->callback) : 0;
+}
+unsigned framegen_transition_index()
+{
+    if (g_framegen_transition_tls == TLS_OUT_OF_INDEXES) return UINT_MAX;
+    const auto *context = static_cast<const FrameGenTransitionContext *>(TlsGetValue(g_framegen_transition_tls));
+    return context && context->index_valid ? context->multi_frame_index : UINT_MAX;
 }
 void pump_frame_trace();
 
@@ -292,13 +321,15 @@ private:
 
 __declspec(noinline) void set_scale(int scale)
 {
-    scale = std::clamp(scale, 25, 100);
+    scale = nr::clamp_scale_percent(scale);
     if (g_scale_percent.exchange(scale, std::memory_order_relaxed) != scale)
     {
-        const unsigned generation = g_scale_generation.fetch_add(1, std::memory_order_relaxed) + 1;
-        g_transition_generation.store(generation, std::memory_order_release);
+        const unsigned allocation_generation = g_scale_generation.fetch_add(1, std::memory_order_relaxed) + 1;
+        const unsigned stream_generation = g_stream_generation.fetch_add(1, std::memory_order_relaxed) + 1;
+        g_transition_generation.store(stream_generation, std::memory_order_release);
         g_transition_native_frame.store(0, std::memory_order_release);
         g_transition_pass_mask.store(0, std::memory_order_release);
+        g_quiesce_generation.store(allocation_generation, std::memory_order_release);
         g_effective_scale.store(100, std::memory_order_relaxed);
         set_config_int("RenoDXNeuralResolution", "ScalePercent", scale);
         set_config_int("RenoDXNeuralResolution", "AppliedScalePercentV6", scale);
@@ -327,7 +358,7 @@ void observe_stream_configuration()
     {
         if (!g_stream_signature.compare_exchange_weak(previous, signature, std::memory_order_acq_rel))
             continue;
-        const unsigned generation = g_scale_generation.fetch_add(1, std::memory_order_relaxed) + 1;
+        const unsigned generation = g_stream_generation.fetch_add(1, std::memory_order_relaxed) + 1;
         g_transition_generation.store(generation, std::memory_order_release);
         g_transition_native_frame.store(0, std::memory_order_release);
         g_transition_pass_mask.store(0, std::memory_order_release);
@@ -385,7 +416,7 @@ void pump_frame_trace()
         deadline = now + 10000;
         g_trace_status.store(1);
         log_text(reshade::log::level::info,
-            "NR V6.6 trace START: 10 seconds, at most 4096 records; native-observer gate and NR wrapper only, not every route, GPU timings or proven generated-frame identity.");
+            "NR V6.6 trace START: 10 seconds, at most 4096 records; native gate and NR wrapper source-frame/MFG-index observations only, not GPU timings.");
     }
     if (g_trace_status.load() == 0 || now < deadline || now < next_drain) return;
     g_trace_status.store(2);
@@ -400,9 +431,9 @@ void pump_frame_trace()
                 event.tick, event.thread, event.frame, event.source, event.retry ? 1u : 0u, event.result);
         else
             log_message(reshade::log::level::info,
-                "NR V6.6 trace eval: ms=%llu thread=%u cmd=0x%llx color=0x%llx output=0x%llx extent=%ux%u pass=%u result=0x%llx (CPU wrapper return).",
-                event.tick, event.thread, event.command, event.color, event.output,
-                event.width, event.height, event.pass, event.result);
+                "NR V6.6 trace eval: ms=%llu thread=%u source-frame=%llu MFG-index=%u cmd=0x%llx color=0x%llx output=0x%llx extent=%ux%u pass=%u result=0x%llx (CPU wrapper return).",
+                event.tick, event.thread, event.frame, event.mfg_index, event.command,
+                event.color, event.output, event.width, event.height, event.pass, event.result);
     }
     if (emitted < 64)
     {
@@ -559,6 +590,12 @@ const char *message_text(OverlayMessage message)
     case OverlayMessage::preset_1: return "PRESET 1";
     case OverlayMessage::preset_2: return "PRESET 2";
     case OverlayMessage::preset_3: return "PRESET 3";
+    case OverlayMessage::pass_count:
+    {
+        static char text[32] = {};
+        diagnostic_format(text, "NR PASSES: %u", g_overlay_pass_count.load());
+        return text;
+    }
     default: return "";
     }
 }
@@ -581,6 +618,39 @@ void queue_preset(int preset, OverlayMessage message)
     int expected = -1;
     if (g_queued_preset.compare_exchange_strong(expected, preset, std::memory_order_release))
         g_queued_message = message;
+}
+
+bool adjust_pass_count(int direction, ULONGLONG now)
+{
+    if (g_target_module == nullptr || direction == 0)
+        return false;
+    const auto base = reinterpret_cast<std::uintptr_t>(g_target_module);
+    const unsigned current = nr::clamp_pass_count(field<unsigned>(g_target_module, 0x266FA4));
+    const unsigned desired = nr::adjust_pass_count(current, direction);
+    if (desired == current)
+        return false;
+
+    int preset = field<int>(g_target_module, kPresetIndexRva);
+    if (preset < 1 || preset > 3)
+        preset = std::clamp(g_last_preset, 1, 3);
+    char section_buffer[128] = {};
+    PresetStringView section;
+    if (!make_preset_section(field<PresetStringView>(g_target_module, kGlobalNameRva),
+            preset, section_buffer, section))
+        return false;
+
+    auto *settings_mutex = reinterpret_cast<PSRWLOCK>(base + kSettingsMutexRva);
+    AcquireSRWLockExclusive(settings_mutex);
+    InterlockedExchange(reinterpret_cast<volatile LONG *>(base + 0x266FA4),
+        static_cast<LONG>(desired));
+    ReleaseSRWLockExclusive(settings_mutex);
+    set_config_int(section_buffer, "DirectNeuralRenderingPassCount", static_cast<int>(desired));
+    observe_stream_configuration();
+    g_overlay_pass_count.store(desired);
+    show_message(OverlayMessage::pass_count, now);
+    log_message(reshade::log::level::info,
+        "RenoDX Neural Resolution: pass-count hotkey set [%s] to %u.", section_buffer, desired);
+    return true;
 }
 
 void probe_optional_xefg_path()
@@ -841,6 +911,8 @@ void draw_hotkey_overlay(reshade::api::effect_runtime *runtime)
     commit_queued_preset(now);
     observe_stream_configuration();
     if (pressed[2]) request_screenshot();
+    if (pressed[3]) adjust_pass_count(1, now);
+    if (pressed[4]) adjust_pass_count(-1, now);
 
     if (g_overlay_message == OverlayMessage::none)
         return;
@@ -1056,7 +1128,7 @@ extern "C" __declspec(dllexport) bool native_evaluation_gate(
 
 extern "C" __declspec(dllexport) const char *NAME = "RenoDX Neural Resolution";
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
-    "V6.6: budgeted fence-retired NR textures, native frame checks without replay, persistent presets, aligned controls and 50-100% neural resolution.";
+    "V6.6 release 1.0.3: isolated stream/resource epochs, bounded maintenance, persistent controls and 25-150% neural resolution.";
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 {
@@ -1080,6 +1152,34 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             g_unregister_event_for_addon = reinterpret_cast<UnregisterEventForAddonFunction>(
                 GetProcAddress(host, "ReShadeUnregisterEventForAddon"));
         }
+        char module_path[MAX_PATH] = {};
+        GetModuleFileNameA(module, module_path, static_cast<DWORD>(std::size(module_path)));
+        const char *module_name = module_path;
+        for (const char *cursor = module_path; *cursor != 0; ++cursor)
+            if (*cursor == '\\' || *cursor == '/') module_name = cursor + 1;
+        constexpr char canonical_name[] = "renodx-dlss5-super-anus.addon64";
+        bool canonical = true;
+        for (std::size_t i = 0;; ++i)
+        {
+            char left = module_name[i], right = canonical_name[i];
+            if (left >= 'A' && left <= 'Z') left = static_cast<char>(left - 'A' + 'a');
+            if (right >= 'A' && right <= 'Z') right = static_cast<char>(right - 'A' + 'a');
+            if (left != right) { canonical = false; break; }
+            if (left == 0) break;
+        }
+        log_message(reshade::log::level::info,
+            "NR BUILD ID: 1.0.3 module=%s config-schema=7.",
+            module_path[0] != 0 ? module_path : "<unknown>");
+        if (!canonical)
+            log_message(reshade::log::level::warning,
+                "NR BUILD ID: noncanonical addon filename '%s'; keep exactly one active copy named %s.",
+                module_name, canonical_name);
+        const bool ngx_already_loaded = GetModuleHandleW(L"nvngx_dlss.dll") != nullptr ||
+            GetModuleHandleW(L"_nvngx.dll") != nullptr || GetModuleHandleW(L"sl.interposer.dll") != nullptr;
+        log_message(reshade::log::level::info,
+            "NR ATTACH ORDER 1: NGX/Streamline already-loaded=%u; existing evaluations remain supported, but create-time overrides may require recreating the game's DLSS feature.",
+            ngx_already_loaded ? 1u : 0u);
+        set_config_int("RenoDXNeuralResolution", "ConfigSchema", 7);
         imgui_function_table_instance() =
             *reinterpret_cast<const imgui_function_table **>(
                 reinterpret_cast<std::uintptr_t>(module) + kImguiTableRva);
@@ -1092,15 +1192,15 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
         g_transfer_percent.store(std::clamp(configured_transfer, 0, 200));
         g_color_percent.store(std::clamp(configured_color, 0, 100));
         log_text(reshade::log::level::info,
-            "NR COST SCALER 1: replaces legacy scaler; 25-100%, matched residual/direct, fence-retired native anchors. No additional hotkeys.");
+            "NR COST SCALER 2: 25-150% internal NR scaling, native 100% bypass, matched residual/direct, fence-retired native anchors.");
         log_text(reshade::log::level::info,
-            "NR RESOURCE POOL 1: shared device/pass history, four-set stream cap, fence-safe source rebinding and native transition frames enabled.");
+            "NR RESOURCE POOL 2: shared device/pass history, transactional pass reservations, adaptive in-flight cap and fence-safe source rebinding enabled.");
         if (g_framegen_transition_tls == TLS_OUT_OF_INDEXES)
             log_text(reshade::log::level::warning,
                 "NR FRAMEGEN SCALE ROUTE 1: Windows TLS allocation failed; manual FrameGen scaling retains the native fallback path.");
         else
             log_text(reshade::log::level::info,
-                "NR FRAMEGEN SCALE ROUTE 1: callback-scoped transition frames enabled; reduced scaling preserves the selected hook's native color encoding.");
+                "NR FRAMEGEN SCALE ROUTE 1: callback-scoped transition frames enabled; scaled NR preserves the selected hook's native color encoding.");
         load_control_keys();
         int configured_sharpness = 35;
         // Migrate even saved V6.3=true configurations away from unsafe replay.
@@ -1110,7 +1210,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             g_sharpness_percent.store(std::clamp(configured_sharpness, 0, 100), std::memory_order_relaxed);
         if (get_config_int("RenoDXNeuralResolution", "AppliedScalePercentV6", configured_scale))
         {
-            configured_scale = std::clamp(configured_scale, 25, 100);
+            configured_scale = nr::clamp_scale_percent(configured_scale);
             g_scale_percent.store(configured_scale, std::memory_order_relaxed);
             g_pending_scale_percent.store(configured_scale, std::memory_order_relaxed);
         }
@@ -1123,7 +1223,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
                 !get_config_int("RenoDXNeuralResolution", "ScalePercent", legacy_scale))
                 get_config_int("RenoDX DLSS Unified", "NeuralResolutionScale", legacy_scale);
             if (legacy_scale != 100)
-                g_pending_scale_percent.store(std::clamp(legacy_scale, 25, 100), std::memory_order_relaxed);
+                g_pending_scale_percent.store(nr::clamp_scale_percent(legacy_scale), std::memory_order_relaxed);
         }
         g_hook_installed.store(true, std::memory_order_release);
         const int current = *reinterpret_cast<volatile int *>(
@@ -1155,17 +1255,17 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             g_lifetime_events_registered = true;
         }
         log_text(reshade::log::level::info,
-            "RenoDX Neural Resolution V6.6: initialized; 512 MiB texture budget, nonblocking GPU retirement, legacy XeFG replay disabled.");
+            "NR RUNTIME STABILITY 3: stream/resource epochs separated, compatible prewarm reuse, cached VRAM adapter and one-retirement maintenance enabled.");
         log_text(reshade::log::level::info,
             "NR UI REVISION 3: Performance before Debug; Runtime API collapsed by default; obsolete diagnostic controls removed. Rendering backend unchanged.");
         log_text(reshade::log::level::info,
             "NR UI REVISION 4: Reconstruction Sharpness disabled at applied resolution 100%; saved sharpness retained.");
         log_text(reshade::log::level::info,
-            "NR CAPTURE TEST 3: scoped no-codec capture; rebindable F6 toggle, F7 presets, F5 NR pair; PNG only. Capture behavior retained; Auto recovery reported separately.");
+            "NR CAPTURE TEST 3: scoped no-codec capture; rebindable F6 toggle, F7 presets, F5 NR pair, pass +/-; PNG only. Capture behavior retained; Auto recovery reported separately.");
         log_text(reshade::log::level::info,
             "NR PASS TEST 1: bounded unpinned command-list recycling and live NR re-registration; all five frame-gate sites observed without replay. Waiting root cause is not yet confirmed.");
         log_message(reshade::log::level::info,
-            "NR FG PROBE 2: native FrameGen callback diagnostics enabled; see NR AUTO RECOVERY 3 for the guarded Auto fallback policy.");
+            "NR FG ROUTE 5: source-frame/MFG-index context enabled; native manual hooks remain transparent; detailed probes require an explicit frame trace.");
         log_message(reshade::log::level::info,
             "NR AUTO RECOVERY 3: guarded native SR fallback after 750 ms without successful FrameGen NR; sticky in Auto for this process; original native gate and manual hooks preserved.");
 #ifdef NR_DX11_GAME_TEST

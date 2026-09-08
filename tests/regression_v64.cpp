@@ -4,6 +4,7 @@
 #include "resource_retirement.hpp"
 #include "native_feature_slots.hpp"
 #include "native_gate_policy.hpp"
+#include "multipass_stability_policy.hpp"
 
 int main()
 {
@@ -37,6 +38,7 @@ int main()
     assert(retirement_candidate(false, true, 75, 1, 1, 100, 101));
     assert(retirement_candidate(true, false, 75, 1, 1, 100, 101));
     assert(retirement_candidate(true, true, 100, 1, 1, 100, 101));
+    assert(!retirement_candidate(true, true, 125, 1, 1, 100, 101));
     assert(retirement_candidate(true, true, 75, 1, 2, 100, 101));
     // Native feature lifetimes use 99 for the scale predicate: native 100% NR
     // remains active and must not be repeatedly destroyed/re-created.
@@ -50,6 +52,51 @@ int main()
     assert(!fence_completed(7, 8));
     assert(fence_completed(8, 8));
     assert(!fence_completed(UINT64_MAX, 8));
+
+    const auto ample = nr::adaptive_memory_admission(128ull << 20, 8ull << 30, 16ull << 30, 2);
+    assert(ample.queried && ample.cache_limit == nr::maximum_working_cache);
+    const auto pressured = nr::adaptive_memory_admission(192ull << 20, 15ull << 30, 16ull << 30, 4);
+    assert(pressured.queried && pressured.cache_limit == (192ull << 20));
+    const auto unavailable = nr::adaptive_memory_admission(0,0,0,2);
+    assert(!unavailable.queried && unavailable.cache_limit == nr::maximum_working_cache);
+    const auto over_budget = nr::adaptive_memory_admission(256ull << 20,17ull << 30,16ull << 30,2);
+    assert(over_budget.queried && over_budget.available_headroom == 0 &&
+        over_budget.cache_limit == (256ull << 20));
+    nr::MultipassGroupPolicy groups;
+    assert(!groups.use_native(1,100,0,3,false));
+    assert(!groups.use_native(1,100,1,3,false));
+    groups.allocation_failed(1,100);
+    assert(groups.use_native(1,100,2,3,false));
+    assert(groups.blocked(1));
+    for (std::uint64_t frame=101;frame<125;++frame)
+        assert(groups.use_native(1,frame,0,3,false));
+    groups.reset();
+    assert(!groups.blocked(1));
+
+    assert(groups.use_native(2,200,0,10,true));
+    for (unsigned pass=1;pass<10;++pass)
+        assert(groups.use_native(2,200,pass,10,false));
+    assert(groups.complete());
+    assert(groups.blocked(2));
+    assert(groups.use_native(2,201,0,10,false));
+    groups.reset();
+    assert(!groups.use_native(3,202,0,10,false));
+
+    assert(nr::maximum_working_sets(1) == 4);
+    assert(nr::maximum_working_sets(2) == 6);
+    assert(nr::maximum_working_sets(3) == 9);
+    assert(nr::maximum_working_sets(4) == 12);
+    assert(nr::maximum_working_sets(10) == 12);
+    assert(nr::maximum_working_sets(99) == 12);
+    for (unsigned passes=1;passes<=10;++passes)
+        for (int scale=25;scale<=150;++scale)
+        {
+            groups.reset();
+            const bool pressure = passes > 1 && (scale >= 99 || scale <= 35);
+            for (unsigned pass=0;pass<passes;++pass)
+                assert(groups.use_native(1000+scale,5000+scale,pass,passes,pressure) == pressure);
+            assert(groups.complete());
+        }
     std::array<std::uint64_t, 2> completed{5, 9}, required{6, 9};
     assert(!(fence_completed(completed[0], required[0]) && fence_completed(completed[1], required[1])));
     completed[0] = 6;

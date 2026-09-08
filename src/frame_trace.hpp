@@ -18,6 +18,7 @@ struct FrameTraceEvent
     std::uint64_t result = 0; // Gate allow / NR wrapper return, NOT GPU completion.
     std::uint64_t command = 0, color = 0, output = 0;
     unsigned width = 0, height = 0, pass = 0;
+    unsigned mfg_index = ~0u;
 };
 
 // Explicit ten-second capture only. No allocations, blocking locks, formatting,

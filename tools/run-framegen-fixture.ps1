@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Directory,[switch]$Recovery,[switch]$Capture,[switch]$ScaleChurn)
+param([Parameter(Mandatory=$true)][string]$Directory,[switch]$Recovery,[switch]$Capture,[switch]$ScaleChurn,[switch]$MfgCadence,[int]$InitialScale=0)
 $ErrorActionPreference='Stop'
 $nrRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $nrFixture=[IO.Path]::GetFullPath((Join-Path $nrRoot $Directory))
@@ -20,6 +20,8 @@ $nrVars['NR_CAPTURE_TEST_RVA']=if ($Capture) { $nrIdentity.rva } else { $null }
 $nrVars['NR_CAPTURE_TEST_BYTES']=if ($Capture) { $nrIdentity.bytes } else { $null }
 foreach ($nrEntry in $nrSymbols.PSObject.Properties) { $nrVars[$nrEntry.Name]=$nrEntry.Value }
 $nrVars['NR_TEST_SCALE_CHURN']=if ($ScaleChurn) { '1' } else { $null }
+$nrVars['NR_TEST_MFG_CADENCE']=if ($MfgCadence) { '1' } else { $null }
+$nrVars['NR_TEST_INITIAL_SCALE']=if ($InitialScale -ge 25 -and $InitialScale -le 150) { [string]$InitialScale } else { $null }
 try {
     foreach ($nrName in $nrVars.Keys) { $nrSaved[$nrName]=[Environment]::GetEnvironmentVariable($nrName); [Environment]::SetEnvironmentVariable($nrName,$nrVars[$nrName]) }
     $nrArgument=if ($Recovery) { 'recovery' } else { 'framegen' }

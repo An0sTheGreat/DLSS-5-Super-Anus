@@ -100,9 +100,16 @@ std::array<TrackedQueue, kMaximumQueues> g_tracked_queues = {};
 std::size_t g_command_slot_cursor = 0;
 std::atomic_uint g_command_slots_recycled = 0, g_command_slots_exhausted = 0;
 nr::ScaleHistory g_scale_history;
+nr::MultipassGroupPolicy g_multipass_groups;
+struct LocalMemoryAdapterCache
+{
+    reshade::api::device *device = nullptr;
+    IDXGIAdapter3 *adapter = nullptr;
+};
+LocalMemoryAdapterCache g_local_memory_adapter;
 
 
-void collect_resources_locked(ULONGLONG now);
+void collect_resources_locked(ULONGLONG now, unsigned destruction_budget = UINT_MAX);
 std::uint64_t invoke_native_evaluation(void *input);
 
 void log_fallback_once(unsigned generation, const char *reason)
@@ -329,6 +336,41 @@ void pool_resource_set(ResourceSet &set, ULONGLONG now)
     set.last_use = now;
 }
 
+bool query_local_memory(reshade::api::device *device, std::uint64_t &usage, std::uint64_t &budget)
+{
+    usage = budget = 0;
+    if (device == nullptr) return false;
+    if (g_local_memory_adapter.device != device)
+    {
+        if (g_local_memory_adapter.adapter != nullptr)
+            g_local_memory_adapter.adapter->Release();
+        g_local_memory_adapter = {};
+        using CreateFactory = HRESULT (WINAPI *)(UINT, REFIID, void **);
+        const auto create = reinterpret_cast<CreateFactory>(GetProcAddress(
+            GetModuleHandleW(L"dxgi.dll"), "CreateDXGIFactory2"));
+        if (create == nullptr) return false;
+        IDXGIFactory4 *factory = nullptr;
+        if (FAILED(create(0, __uuidof(IDXGIFactory4), reinterpret_cast<void **>(&factory))))
+            return false;
+        IDXGIAdapter3 *adapter = nullptr;
+        const LUID luid = reinterpret_cast<ID3D12Device *>(device->get_native())->GetAdapterLuid();
+        const HRESULT found = factory->EnumAdapterByLuid(
+            luid, __uuidof(IDXGIAdapter3), reinterpret_cast<void **>(&adapter));
+        factory->Release();
+        if (FAILED(found)) return false;
+        g_local_memory_adapter = {device, adapter};
+    }
+    DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
+    if (FAILED(g_local_memory_adapter.adapter->QueryVideoMemoryInfo(
+            0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
+        return false;
+    usage = info.CurrentUsage;
+    budget = info.Budget;
+    g_local_memory_usage.store(usage, std::memory_order_relaxed);
+    g_local_memory_budget.store(budget, std::memory_order_relaxed);
+    return true;
+}
+
 std::uint64_t texture_allocation_size(reshade::api::device *device, std::uint32_t width,
                                      std::uint32_t height, reshade::api::format format)
 {
@@ -460,6 +502,8 @@ std::uint64_t invoke_native_evaluation(void *input)
         event.width = field<unsigned>(input, 0x44);
         event.height = field<unsigned>(input, 0x48);
         event.pass = field<unsigned>(input, 8);
+        event.frame = framegen_transition_frame();
+        event.mfg_index = framegen_transition_index();
         event.result = result;
         g_frame_trace.push(event);
     }
@@ -588,8 +632,9 @@ void on_execute_recording(reshade::api::command_queue *queue, reshade::api::comm
     // that could submit these resources have been replaced or destroyed.
 }
 
-void collect_resources_locked(ULONGLONG now)
+void collect_resources_locked(ULONGLONG now, unsigned destruction_budget)
 {
+    unsigned destructive_actions = 0;
     std::uint64_t recording_mask = 0;
     for (const auto &record : g_tracked_command_lists)
         if (record.active) recording_mask |= record.references.sets;
@@ -604,12 +649,17 @@ void collect_resources_locked(ULONGLONG now)
         // rebound without reallocating the large textures.
         if (set.pooled)
         {
-            if (!nr_enabled() || g_scale_percent.load() >= 100 ||
-                set.allocation_generation != g_scale_generation.load())
+            if (!nr_enabled() || !nr::uses_scaled_path(g_scale_percent.load()) ||
+                set.allocation_generation != g_scale_generation.load() ||
+                (now >= set.last_use && now - set.last_use >= 1000))
             {
-                destroy_resource_set(set);
-                g_retired_sets.fetch_add(1, std::memory_order_relaxed);
-                continue;
+                if (destructive_actions < destruction_budget)
+                {
+                    ++destructive_actions;
+                    destroy_resource_set(set);
+                    g_retired_sets.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
             }
             ++active;
             ++pooled;
@@ -626,8 +676,13 @@ void collect_resources_locked(ULONGLONG now)
         // is signaled by queue->signal AFTER it submits that immediate list.
         if (set.capture_fence) {
             if (!set.unsafe_tracking && set.capture_fence_value &&
-                fence_completed(set.capture_fence->GetCompletedValue(),set.capture_fence_value)) {
-                capture::finish(set); destroy_resource_set(set); g_retired_sets.fetch_add(1); continue;
+                fence_completed(set.capture_fence->GetCompletedValue(),set.capture_fence_value) &&
+                destructive_actions < destruction_budget) {
+                ++destructive_actions;
+                capture::finish(set);
+                destroy_resource_set(set);
+                g_retired_sets.fetch_add(1);
+                continue;
             }
             ++active; ++pinned; bytes += set.allocated_bytes;
             if (set.unsafe_tracking) ++unsafe;
@@ -667,8 +722,9 @@ void collect_resources_locked(ULONGLONG now)
             {
                 if (set.native_feature)
                 {
-                    if (release_native_feature(set))
+                    if (destructive_actions < destruction_budget && release_native_feature(set))
                     {
+                        ++destructive_actions;
                         set = {};
                         g_retired_sets.fetch_add(1, std::memory_order_relaxed);
                         continue;
@@ -676,13 +732,14 @@ void collect_resources_locked(ULONGLONG now)
                 }
                 else
                 {
-                    if (set.capture)
+                    if (set.capture && destructive_actions < destruction_budget)
                     {
+                        ++destructive_actions;
                         capture::finish(set);
                         destroy_resource_set(set);
                         g_retired_sets.fetch_add(1, std::memory_order_relaxed);
                     }
-                    else if (nr_enabled() && g_scale_percent.load() < 100 &&
+                    else if (nr_enabled() && nr::uses_scaled_path(g_scale_percent.load()) &&
                         set.allocation_generation == g_scale_generation.load())
                     {
                         pool_resource_set(set, now);
@@ -690,12 +747,13 @@ void collect_resources_locked(ULONGLONG now)
                         ++pooled;
                         bytes += set.allocated_bytes;
                     }
-                    else
+                    else if (!set.capture && destructive_actions < destruction_budget)
                     {
+                        ++destructive_actions;
                         destroy_resource_set(set);
                         g_retired_sets.fetch_add(1, std::memory_order_relaxed);
                     }
-                    continue;
+                    if (!set.active || set.pooled) continue;
                 }
             }
         }
@@ -715,32 +773,17 @@ void collect_resources_locked(ULONGLONG now)
     g_pooled_sets.store(pooled);
 }
 
-void log_video_memory()
+bool configuration_epoch_ready_locked(unsigned generation, ULONGLONG now)
 {
-    reshade::api::device *device = g_pipeline_device;
-    if (device == nullptr)
-        for (const auto &queue : g_tracked_queues)
-            if (queue.device != nullptr) { device = queue.device; break; }
-    if (device == nullptr) return;
-    using CreateFactory = HRESULT (WINAPI *)(UINT, REFIID, void **);
-    const auto create = reinterpret_cast<CreateFactory>(GetProcAddress(
-        GetModuleHandleW(L"dxgi.dll"), "CreateDXGIFactory2"));
-    if (create == nullptr) return;
-    IDXGIFactory4 *factory = nullptr;
-    if (FAILED(create(0, __uuidof(IDXGIFactory4), reinterpret_cast<void **>(&factory)))) return;
-    IDXGIAdapter3 *adapter = nullptr;
-    const LUID luid = reinterpret_cast<ID3D12Device *>(device->get_native())->GetAdapterLuid();
-    if (SUCCEEDED(factory->EnumAdapterByLuid(luid, __uuidof(IDXGIAdapter3), reinterpret_cast<void **>(&adapter))))
-    {
-        DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
-        if (SUCCEEDED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
-            log_message(reshade::log::level::info,
-                "NR V6.6 process GPU memory: local usage=%llu MiB budget=%llu MiB (includes game and other mods).",
-                static_cast<unsigned long long>(info.CurrentUsage >> 20),
-                static_cast<unsigned long long>(info.Budget >> 20));
-        adapter->Release();
-    }
-    factory->Release();
+    if (g_quiesce_generation.load(std::memory_order_acquire) != generation) return true;
+    collect_resources_locked(now);
+    for (const auto &set : g_resource_sets)
+        if (set.active && !set.capture && set.allocation_generation != generation)
+            return false;
+    unsigned expected = generation;
+    if (g_quiesce_generation.compare_exchange_strong(expected, 0, std::memory_order_acq_rel))
+        g_multipass_groups.reset();
+    return true;
 }
 
 bool try_lock_native_nr()
@@ -851,7 +894,7 @@ bool close_quiescent_private_caches(reshade::api::device *device)
 void maintain_resources()
 {
     const ULONGLONG now = GetTickCount64();
-    static ULONGLONG next_collect = 0, next_report = 0;
+    static ULONGLONG next_collect = 0;
     if (now < next_collect) return;
     next_collect = now + 250;
     // The verified host call sites lock this mutex before entering our evaluate
@@ -866,30 +909,7 @@ void maintain_resources()
     {
         ~UnlockRender() { LeaveCriticalSection(&g_render_mutex); }
     } render_lock;
-    collect_resources_locked(now);
-    if (now < next_report) return;
-    next_report = now + 5000;
-    log_message(reshade::log::level::info,
-        "NR V6.6 cache: MiB=%u/512 sets=%u pinned=%u retiring=%u pooled=%u rebound=%u safety-held=%u retired=%u budget-fallbacks=%u.",
-        g_cached_mib.load(), g_cached_sets.load(), g_pinned_sets.load(), g_retiring_sets.load(),
-        g_pooled_sets.load(), g_rebound_sets.load(), g_unsafe_sets.load(),
-        g_retired_sets.load(), g_budget_fallbacks.load());
-    log_message(reshade::log::level::info,
-        "NR V6.6 activity: enabled=%d scale=%d passes=%u eval=%u scaled=%u fg-scaled=%u transition-native=%u scale-fallbacks=%u suppressed-while-off=%u gate=%u rejected=%u zero-frame=%u (cumulative; not GPU timings).",
-        nr_enabled() ? 1 : 0, g_scale_percent.load(), *reinterpret_cast<volatile unsigned *>(
-            reinterpret_cast<std::uintptr_t>(g_target_module) + 0x266FA4),
-        g_evaluation_calls.load(), g_scaled_calls.load(), g_framegen_scaled_calls.load(),
-        g_transition_native_calls.load(), g_scale_fallback_calls.load(), g_off_evaluation_calls.load(),
-        g_native_gate_calls.load(), g_native_gate_rejected.load(), g_native_zero_frame.load());
-    log_message(reshade::log::level::info,
-        "NR V6.6 features: tracked=%u released=%u upstream-retained=%llu per-pass-slots=%llu; feature VRAM is not included in texture budget.",
-        g_native_features.load(), g_native_features_retired.load(),
-        static_cast<unsigned long long>(native_slots(0x26D8E8).count()),
-        static_cast<unsigned long long>(native_slots(0x26D8D0).count()));
-    log_message(reshade::log::level::info,
-        "NR V6.6 native frame-ID observations: last=%llu repeated=%u backward=%u (observer IDs, not proven real-frame counts).",
-        g_native_last_frame.load(), g_native_repeated_frame.load(), g_native_backward_frame.load());
-    log_video_memory();
+    collect_resources_locked(now, 1);
 }
 
 bool create_output_view(
@@ -1000,7 +1020,8 @@ ResourceSet *find_or_create_resource_set(
     std::uint32_t display_width,
     std::uint32_t display_height,
     std::uint32_t work_width,
-    std::uint32_t work_height)
+    std::uint32_t work_height,
+    bool force_new = false)
 {
     if (color_desc.type != reshade::api::resource_type::texture_2d ||
         output_desc.type != reshade::api::resource_type::texture_2d ||
@@ -1038,6 +1059,7 @@ ResourceSet *find_or_create_resource_set(
             set.ui_format == ui_format && set.ui_alpha_format == ui_alpha_format;
     };
 
+    if (!force_new)
     for (auto &set : g_resource_sets)
     {
         if (compatible_working_set(set) && set.valid && !set.pooled && !set.retiring &&
@@ -1055,6 +1077,7 @@ ResourceSet *find_or_create_resource_set(
     // Rebind only a set whose previous command recordings and real queue fences
     // have fully drained. The private working textures and their state survive;
     // only the lightweight descriptors for the new game resources are replaced.
+    if (!force_new)
     for (auto &set : g_resource_sets)
         if (set.pooled && compatible_working_set(set) &&
             bind_source_resources(set, color, output, motion, depth, ui, ui_alpha,
@@ -1065,14 +1088,14 @@ ResourceSet *find_or_create_resource_set(
             return &set;
         }
 
-    // Bound one evaluation stream to four in-flight working sets. Dawnwalker
-    // rotates source handles under FrameGen; a fifth identity uses the original
-    // native path for that call instead of creating an allocation spiral.
-    constexpr unsigned kMaximumWorkingSetsPerStream = 4;
+    // Allow up to three complete in-flight multipass groups while the real
+    // queue fences drain. Memory admission remains the harder upper bound.
+    const unsigned maximum_sets = nr::maximum_working_sets(
+        field<unsigned>(g_target_module,0x266FA4));
     unsigned stream_sets = 0;
     for (const auto &set : g_resource_sets)
         if (compatible_working_set(set)) ++stream_sets;
-    if (stream_sets >= kMaximumWorkingSetsPerStream)
+    if (stream_sets >= maximum_sets)
     {
         g_budget_fallbacks.fetch_add(1, std::memory_order_relaxed);
         return nullptr;
@@ -1095,7 +1118,14 @@ ResourceSet *find_or_create_resource_set(
     requested_bytes += native_bytes;
     // Incompatible pooled shapes are already fence-safe. Evict them before
     // rejecting a current frame for budget pressure.
-    if (!allocation_fits(used_bytes, requested_bytes, kWorkingTextureBudget))
+    std::uint64_t local_usage = 0, local_budget = 0;
+    auto admission = nr::MemoryAdmission{};
+    if (query_local_memory(device, local_usage, local_budget))
+        admission = nr::adaptive_memory_admission(used_bytes, local_usage, local_budget,
+            field<unsigned>(g_target_module,0x266FA4));
+    const std::uint64_t working_budget = admission.queried ? admission.cache_limit : kWorkingTextureBudget;
+    g_adaptive_cache_limit.store(working_budget, std::memory_order_relaxed);
+    if (!allocation_fits(used_bytes, requested_bytes, working_budget))
         for (auto &candidate : g_resource_sets)
         {
             if (!candidate.pooled || compatible_working_set(candidate)) continue;
@@ -1103,9 +1133,9 @@ ResourceSet *find_or_create_resource_set(
             destroy_resource_set(candidate);
             g_retired_sets.fetch_add(1, std::memory_order_relaxed);
             used_bytes = released <= used_bytes ? used_bytes - released : 0;
-            if (allocation_fits(used_bytes, requested_bytes, kWorkingTextureBudget)) break;
+            if (allocation_fits(used_bytes, requested_bytes, working_budget)) break;
         }
-    if (!allocation_fits(used_bytes, requested_bytes, kWorkingTextureBudget))
+    if (!allocation_fits(used_bytes, requested_bytes, working_budget))
     {
         g_budget_fallbacks.fetch_add(1, std::memory_order_relaxed);
         return nullptr;
@@ -1230,13 +1260,14 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
     }
     g_evaluation_calls.fetch_add(1, std::memory_order_relaxed);
     const int scale_percent = g_scale_percent.load(std::memory_order_relaxed);
-    if (scale_percent >= 100 || !g_lifetime_events_registered)
+    if (!nr::uses_scaled_path(scale_percent) || !g_lifetime_events_registered)
     {
         g_effective_scale.store(100, std::memory_order_relaxed);
         return original(input);
     }
 
-    const unsigned generation = g_scale_generation.load(std::memory_order_relaxed);
+    const unsigned allocation_generation = g_scale_generation.load(std::memory_order_relaxed);
+    const unsigned generation = g_stream_generation.load(std::memory_order_relaxed);
     const auto framegen_frame = framegen_transition_frame();
     const bool framegen_route = framegen_frame != 0;
     const unsigned hook_method = static_cast<unsigned>(field<float>(g_target_module, 0x270FB0));
@@ -1329,6 +1360,12 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
     reshade::api::device *device = command_list_record->device;
     cmd_list = command_list_record->command_list;
     command_list_record->references.recording();
+    if (!configuration_epoch_ready_locked(allocation_generation, GetTickCount64()))
+    {
+        g_quiesce_native_calls.fetch_add(1, std::memory_order_relaxed);
+        g_effective_scale.store(100, std::memory_order_relaxed);
+        return original(input);
+    }
     if (trace_this_call)
         log_message(reshade::log::level::info,
             "RenoDX Neural Resolution: [3/9 command] matched %s command list; querying input descriptions through its verified ReShade device.",
@@ -1348,12 +1385,95 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
         return native_fallback("an input texture or subrect is unsupported");
 
     // Keep dimensions even: feature 18 and FP16 paths are most reliable on 2-pixel alignment.
-    const std::uint32_t work_width = std::max(2u,
-        ((display_width * static_cast<std::uint32_t>(scale_percent) + 50u) / 100u) & ~1u);
-    const std::uint32_t work_height = std::max(2u,
-        ((display_height * static_cast<std::uint32_t>(scale_percent) + 50u) / 100u) & ~1u);
-    if (work_width >= display_width && work_height >= display_height)
+    const std::uint32_t work_width = nr::scaled_extent(display_width, scale_percent);
+    const std::uint32_t work_height = nr::scaled_extent(display_height, scale_percent);
+    if (work_width > nr::maximum_texture_extent || work_height > nr::maximum_texture_extent)
+        return native_fallback("the requested internal Neural Rendering extent exceeds the D3D12 texture limit");
+    if (work_width == display_width && work_height == display_height)
         return original(input);
+
+    const unsigned pass_count = std::clamp(field<unsigned>(g_target_module,0x266FA4),1u,10u);
+    if (g_multipass_groups.blocked(generation))
+    {
+        if (evaluation_pass == 0)
+            g_memory_native_groups.fetch_add(1, std::memory_order_relaxed);
+        g_effective_scale.store(100, std::memory_order_relaxed);
+        return original(input);
+    }
+    const std::uint64_t group_token = framegen_route ? framegen_frame :
+        g_native_last_frame.load(std::memory_order_relaxed);
+    bool group_pressure = false;
+    if (evaluation_pass == 0 && pass_count > 1)
+    {
+        const auto color_format = writable_format(color_desc.texture.format);
+        const auto output_format = writable_format(output_desc.texture.format);
+        const auto motion_format = writable_format(motion_desc.texture.format);
+        const auto depth_format = writable_format(depth_desc.texture.format);
+        const auto ui_format = ui.handle ? writable_format(ui_desc.texture.format) : reshade::api::format::unknown;
+        const auto ui_alpha_format = ui_alpha.handle ? writable_format(ui_alpha_desc.texture.format) : reshade::api::format::unknown;
+        std::uint64_t one_set = texture_allocation_size(device,display_width,display_height,color_format);
+        bool size_valid = one_set != 0 && one_set != UINT64_MAX;
+        for (const auto format : {color_format,output_format,motion_format,depth_format,ui_format,ui_alpha_format})
+            if (format != reshade::api::format::unknown)
+            {
+                const auto bytes = texture_allocation_size(device,work_width,work_height,format);
+                if (bytes == UINT64_MAX || one_set > UINT64_MAX - bytes) size_valid = false;
+                else one_set += bytes;
+            }
+        std::uint64_t used = 0;
+        unsigned compatible = 0;
+        for (const auto &candidate : g_resource_sets)
+        {
+            if (!candidate.active) continue;
+            used += candidate.allocated_bytes;
+            if (!candidate.capture && !candidate.native_feature && candidate.valid &&
+                !candidate.retiring &&
+                candidate.device == device && candidate.allocation_generation == allocation_generation &&
+                candidate.display_width == display_width && candidate.display_height == display_height &&
+                candidate.work_width == work_width && candidate.work_height == work_height &&
+                candidate.color_format == color_format && candidate.output_format == output_format &&
+                candidate.motion_format == motion_format && candidate.depth_format == depth_format &&
+                candidate.ui_format == ui_format && candidate.ui_alpha_format == ui_alpha_format)
+                ++compatible;
+        }
+        const unsigned missing = pass_count > compatible ? pass_count - compatible : 0;
+        if (missing != 0 && size_valid && one_set <= UINT64_MAX / missing)
+        {
+            std::uint64_t usage = 0, budget = 0;
+            const auto admission = query_local_memory(device,usage,budget) ?
+                nr::adaptive_memory_admission(used,usage,budget,pass_count) : nr::MemoryAdmission{};
+            const auto cache_limit = admission.queried ? admission.cache_limit : kWorkingTextureBudget;
+            g_adaptive_cache_limit.store(cache_limit,std::memory_order_relaxed);
+            group_pressure = !allocation_fits(used,one_set*missing,cache_limit);
+        }
+        else if (missing != 0)
+            group_pressure = true;
+        if (!group_pressure)
+            for (unsigned i = 0; i < missing; ++i)
+            {
+                auto *reserved = find_or_create_resource_set(
+                    device, color, output, motion, depth, ui, ui_alpha,
+                    color_desc, output_desc, motion_desc, depth_desc, ui_desc, ui_alpha_desc,
+                    display_width, display_height, work_width, work_height, true);
+                if (reserved == nullptr) { group_pressure = true; break; }
+                pool_resource_set(*reserved, GetTickCount64());
+                g_prewarmed_sets.fetch_add(1, std::memory_order_relaxed);
+            }
+    }
+    const bool native_group = g_multipass_groups.use_native(
+        generation, group_token, evaluation_pass, pass_count, group_pressure);
+    if (native_group)
+    {
+        if (group_pressure)
+        {
+            g_budget_fallbacks.fetch_add(1, std::memory_order_relaxed);
+            log_fallback_once(generation,
+                "the complete multipass group could not be reserved; this configuration stays native until settings change");
+        }
+        g_memory_native_groups.fetch_add(evaluation_pass == 0 ? 1u : 0u, std::memory_order_relaxed);
+        g_effective_scale.store(100, std::memory_order_relaxed);
+        return original(input);
+    }
 
     if (trace_this_call)
     {
@@ -1367,7 +1487,7 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
 
     if (!create_pipeline(device))
         return native_fallback("compute pipeline creation failed");
-    auto *history = g_scale_history.find(reinterpret_cast<std::uintptr_t>(device), field<unsigned>(input, 8));
+    auto *history = g_scale_history.find(reinterpret_cast<std::uintptr_t>(device), evaluation_pass);
     if (!history) return native_fallback("scale-history registry is full");
     if (trace_this_call)
         log_text(reshade::log::level::info,
@@ -1377,7 +1497,19 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
         color_desc, output_desc, motion_desc, depth_desc, ui_desc, ui_alpha_desc,
         display_width, display_height, work_width, work_height);
     if (set == nullptr)
-        return native_fallback("compatible working textures could not be created or the cache is full");
+    {
+        g_multipass_groups.allocation_failed(generation, group_token);
+        if (evaluation_pass == 0)
+        {
+            g_memory_native_groups.fetch_add(1, std::memory_order_relaxed);
+            return native_fallback("compatible working textures could not be created or the cache is full");
+        }
+        g_partial_group_suppressed.fetch_add(1, std::memory_order_relaxed);
+        g_effective_scale.store(100, std::memory_order_relaxed);
+        log_fallback_once(generation,
+            "a later multipass allocation failed; the previous pass was preserved and future groups stay native");
+        return 0;
+    }
     command_list_record->references.sets |= 1ull << (set - g_resource_sets.data());
     g_scaled_calls.fetch_add(1, std::memory_order_relaxed);
     if (framegen_route)
@@ -1419,7 +1551,8 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
     cmd_list->barrier(set->native_color, reshade::api::resource_usage::unordered_access,
         reshade::api::resource_usage::shader_resource_non_pixel);
     dispatch_resample(cmd_list, set->native_color_srv, set->work_color_uav,
-        0, 0, display_width, display_height, work_width, work_height);
+        0, 0, display_width, display_height, work_width, work_height,
+        nr::input_resample_filter(scale_percent));
     dispatch_resample(cmd_list, set->source_motion_srv, set->work_motion_uav,
         motion_x, motion_y, motion_width, motion_height, work_width, work_height, 3);
     dispatch_resample(cmd_list, set->source_depth_srv, set->work_depth_uav,
@@ -1432,7 +1565,7 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
             0, 0, display_width, display_height, work_width, work_height);
     if (trace_this_call)
         log_text(reshade::log::level::info,
-            "RenoDX Neural Resolution: [7/9 downsample] input resampling commands recorded.");
+            "RenoDX Neural Resolution: [7/9 resample] input resampling commands recorded.");
 
     {
         const reshade::api::resource resources[] = {
@@ -1477,7 +1610,7 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
     field<float>(scaled_input.data(), 0x54) *= ratio_x;
     field<float>(scaled_input.data(), 0x58) *= ratio_y;
 
-    // Replace all explicit color/motion/depth subrects with the full reduced extent.
+    // Replace all explicit color/motion/depth subrects with the full scaled extent.
     for (const std::size_t rect : { 0x60u, 0x70u, 0x80u, 0x90u })
     {
         field<std::uint64_t>(scaled_input.data(), rect) = 0;
@@ -1489,15 +1622,6 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
     // device/pass. Creating another texture slot must not reset that history.
     if (history->generation != generation)
     {
-        static unsigned reset_messages = 0;
-        if (reset_messages++ < 32)
-        {
-            char diagnostic[256];
-            diagnostic_format(diagnostic, "NR stream history reset: frame=%llu pass=%u generation=%u resource-slot=%u incoming-reset=%u.",
-                static_cast<unsigned long long>(g_native_last_frame.load()), field<unsigned>(input, 8), generation,
-                static_cast<unsigned>(set - g_resource_sets.data()), field<unsigned char>(input, 0x5D));
-            log_text(reshade::log::level::info, diagnostic);
-        }
         field<std::uint8_t>(scaled_input.data(), 0x5D) = 1;
         set->reset_generation = generation;
     }
@@ -1507,13 +1631,22 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
     {
         cmd_list->barrier(set->native_color, reshade::api::resource_usage::shader_resource_non_pixel,
             reshade::api::resource_usage::unordered_access);
-        return native_fallback("the reduced Neural Rendering evaluation failed");
+        g_multipass_groups.allocation_failed(generation, group_token);
+        if (evaluation_pass != 0)
+        {
+            g_partial_group_suppressed.fetch_add(1, std::memory_order_relaxed);
+            g_effective_scale.store(100, std::memory_order_relaxed);
+            log_fallback_once(generation,
+                "a later scaled pass failed; the previous pass was preserved and future groups stay native");
+            return 0;
+        }
+        return native_fallback("the scaled Neural Rendering evaluation failed");
     }
     history->generation = generation; // Failed records never consume the reset.
     g_effective_scale.store(scale_percent, std::memory_order_relaxed);
     if (trace_this_call)
         log_text(reshade::log::level::info,
-            "RenoDX Neural Resolution: [8/9 evaluation] reduced Neural Rendering evaluation returned successfully.");
+            "RenoDX Neural Resolution: [8/9 evaluation] scaled Neural Rendering evaluation returned successfully.");
 
     cmd_list->barrier(set->work_output,
         reshade::api::resource_usage::unordered_access,
@@ -1619,6 +1752,12 @@ void on_destroy_command_list(reshade::api::command_list *command_list)
 void on_destroy_device(reshade::api::device *device)
 {
     ScopedLock lock(g_render_mutex);
+    if (g_local_memory_adapter.device == device)
+    {
+        if (g_local_memory_adapter.adapter != nullptr)
+            g_local_memory_adapter.adapter->Release();
+        g_local_memory_adapter = {};
+    }
     g_scale_history.forget(reinterpret_cast<std::uintptr_t>(device));
     g_evaluation_device.forget(reinterpret_cast<std::uintptr_t>(device));
     for (auto &set : g_resource_sets)

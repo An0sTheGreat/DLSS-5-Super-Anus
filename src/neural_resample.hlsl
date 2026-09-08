@@ -32,6 +32,19 @@ float4 SampleSmall(Texture2D<float4> tex, float2 p)
     return lerp(lerp(tex.Load(int3(clamp(b,0,m),0)),tex.Load(int3(clamp(b+int2(1,0),0,m),0)),f.x),
         lerp(tex.Load(int3(clamp(b+int2(0,1),0,m),0)),tex.Load(int3(clamp(b+1,0,m),0)),f.x),f.y);
 }
+float4 SampleArea(Texture2D<float4> tex, uint2 pixel)
+{
+    float2 lo = float2(pixel)*float2(SourceExtent)/float2(DestinationSize);
+    float2 hi = float2(pixel+1)*float2(SourceExtent)/float2(DestinationSize);
+    float4 sum = 0;
+    for (int y=int(floor(lo.y)); y<int(ceil(hi.y)); ++y)
+        for (int x=int(floor(lo.x)); x<int(ceil(hi.x)); ++x)
+        {
+            float2 w = max(min(hi,float2(x+1,y+1))-max(lo,float2(x,y)),0);
+            sum += tex.Load(int3(clamp(int2(x,y),0,int2(SourceExtent)-1),0))*w.x*w.y;
+        }
+    return sum/max((hi.x-lo.x)*(hi.y-lo.y),1e-6);
+}
 float4 Bilinear(float2 p)
 {
     int2 b = int2(floor(p)); float2 f = frac(p);
@@ -67,8 +80,9 @@ void Resample(uint3 id : SV_DispatchThreadID)
     float4 native = NativeColor.Load(int3(pixel,0));
     // Zero transfer is an exact native bypass, including alpha and signed HDR.
     if (TransferStrength == 0) { Destination[target] = native; return; }
-    float3 input = SampleSmall(SmallInput,position).rgb;
-    float3 output = SampleSmall(Source,position).rgb;
+    const bool supersampled = any(SourceExtent > DestinationSize);
+    float3 input = (supersampled ? SampleArea(SmallInput,pixel) : SampleSmall(SmallInput,position)).rgb;
+    float3 output = (supersampled ? SampleArea(Source,pixel) : SampleSmall(Source,position)).rgb;
     float3 edit = output - (FilterMode == 1 ? input : native.rgb);
     float yEdit = dot(edit,luma);
     float3 result = native.rgb + (yEdit + (edit-yEdit)*ColorStrength)*TransferStrength;

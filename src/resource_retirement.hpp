@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include "neural_scale_policy.hpp"
 
 // Reset events are PRE-Reset. Do not discard a potentially executable recording
 // until a subsequent recording command confirms the application began a new one.
@@ -18,7 +19,7 @@ inline bool retirement_candidate(bool valid, bool nr_enabled, int scale,
                                  unsigned generation, unsigned current_generation,
                                  std::uint64_t last_use, std::uint64_t now)
 {
-    return !valid || !nr_enabled || scale >= 100 || generation != current_generation ||
+    return !valid || !nr_enabled || !nr::uses_scaled_path(scale) || generation != current_generation ||
         (now >= last_use && now - last_use >= 2000);
 }
 

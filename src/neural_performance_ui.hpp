@@ -1,5 +1,6 @@
 #pragma once
 #include <imgui.h>
+#include "neural_scale_policy.hpp"
 
 struct NeuralResolveControls { int mode = 1, transfer = 100, color = 100; };
 struct NeuralPerformanceEdits { bool pending_changed, apply, sharpness_changed, resolve_changed; };
@@ -11,11 +12,11 @@ inline NeuralPerformanceEdits draw_neural_performance_section(
     ImGui::BeginDisabled(!available);
     NeuralPerformanceEdits edits = {};
     edits.pending_changed = ImGui::SliderInt("Neural Rendering Resolution", &pending,
-        25, 100, "%d%%", ImGuiSliderFlags_AlwaysClamp);
+        nr::minimum_scale_percent, nr::maximum_scale_percent, "%d%%", ImGuiSliderFlags_AlwaysClamp);
     edits.apply = ImGui::Button("Apply##NeuralRenderingResolution") && pending != applied;
     ImGui::SameLine();
     ImGui::Text("Applied: %d%%", applied);
-    ImGui::BeginDisabled(applied == 100);
+    ImGui::BeginDisabled(applied == nr::native_scale_percent);
     if (resolve)
     {
         edits.resolve_changed = ImGui::Combo("Reconstruction Mode", &resolve->mode,
@@ -29,6 +30,6 @@ inline NeuralPerformanceEdits draw_neural_performance_section(
         0, 100, "%d%%", ImGuiSliderFlags_AlwaysClamp);
     ImGui::EndDisabled();
     ImGui::EndDisabled();
-    ImGui::TextWrapped("Sharpness applies only below 100%%, after reduced-resolution reconstruction. At 100%% the native RenoDX output is intentionally unchanged.");
+    ImGui::TextWrapped("Reconstruction controls apply below or above 100%%. At 100%% the native RenoDX output is intentionally unchanged.");
     return edits;
 }

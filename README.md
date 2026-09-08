@@ -4,7 +4,7 @@ An experimental 64-bit ReShade add-on that extends RenoDX DLSS with practical
 DLSS 5 Neural Rendering controls, cost scaling, presets, an integrated DX11
 bridge, and PNG screenshot pairs.
 
-The current public release is **v1.0.2**. Download the packaged add-on from the
+The current public release is **v1.0.3**. Download the packaged add-on from the
 [Releases](https://github.com/An0sTheGreat/DLSS-5-Super-Anus/releases) page.
 
 > This is an unofficial community project. It is not affiliated with or
@@ -19,7 +19,7 @@ The current public release is **v1.0.2**. Download the packaged add-on from the
 ## Features
 
 - One add-on containing the RenoDX DLSS interface and Neural Rendering controls.
-- Neural Rendering resolution from 25% to 100%, staged behind an Apply button.
+- Neural Rendering resolution from 25% to 150%, staged behind an Apply button.
 - Matched Residual and Direct Reconstruction modes.
 - Adjustable neural transfer, color strength, and reconstruction sharpness.
 - Saved presets and rebindable controls.
@@ -53,7 +53,7 @@ bundled here.
    into the add-on search directory configured by ReShade.
 6. Do not stack the standalone DLSSNR Cost Scaler proxy or companion with this
    build. If one replaced NVIDIA's DLL, restore the genuine DLL first.
-7. Launch the game and open the **RenoDX DLSS** tab.
+7. Launch the game and open the **RenoDX DLSS S_A** tab.
 
 See [Installation](docs/INSTALLATION.md) for upgrade and troubleshooting notes.
 
@@ -65,6 +65,8 @@ See [Installation](docs/INSTALLATION.md) for upgrade and troubleshooting notes.
   Neural Rendering path. Resolve controls are disabled at 100%.
 - Lower values change the internal Neural Rendering workload only; they do not
   change the game's output resolution or its DLSS Super Resolution setting.
+- Values above 100% supersample only the internal Neural Rendering evaluation,
+  then reconstruct it to the game's unchanged output resolution.
 
 Default controls:
 
@@ -73,14 +75,17 @@ Default controls:
 | F5 | Capture an NR ON/OFF PNG pair |
 | F6 | Toggle Neural Rendering |
 | F7 | Cycle Preset 1 → 2 → 3 → 1 |
+| = / + | Increase Neural Rendering pass count |
+| - / _ | Decrease Neural Rendering pass count |
 
-All three keys can be rebound in the existing Controls section. See
+All five keys can be rebound in the existing Controls section. See
 [Usage and configuration](docs/USAGE.md) for every setting and capture behavior.
 
 ## Known limitations
 
 - Compatibility varies by game, DLSS integration, driver, and ReShade build.
 - Lower Neural Rendering resolution necessarily reduces neural detail.
+- Values above 100% increase GPU workload and working-texture memory use.
 - Performance gains must be measured in-game; reconstruction and snapshot work
   have their own cost.
 - HDR screenshots are SDR-rendered PNGs intended to resemble the displayed

@@ -27,6 +27,11 @@ int main(int argc,char **argv) {
     const bool recovery = argc>1 && !strcmp(argv[1],"recovery");
     char churn_value[8]={};
     const bool scale_churn=GetEnvironmentVariableA("NR_TEST_SCALE_CHURN",churn_value,sizeof(churn_value))!=0;
+    char mfg_value[8]={};
+    const bool mfg_cadence=GetEnvironmentVariableA("NR_TEST_MFG_CADENCE",mfg_value,sizeof(mfg_value))!=0;
+    char initial_scale_value[8]={};
+    const unsigned initial_scale=GetEnvironmentVariableA("NR_TEST_INITIAL_SCALE",initial_scale_value,sizeof(initial_scale_value)) ?
+        static_cast<unsigned>(std::strtoul(initial_scale_value,nullptr,10)) : 0;
     WNDCLASSW cls={}; cls.lpfnWndProc=DefWindowProcW; cls.hInstance=GetModuleHandleW(nullptr); cls.lpszClassName=L"NRFrameGenFixture";
     RegisterClassW(&cls);
     auto window=CreateWindowW(cls.lpszClassName,L"NR FrameGen callback test",WS_OVERLAPPEDWINDOW,100,100,360,240,nullptr,nullptr,cls.hInstance,nullptr);
@@ -71,8 +76,9 @@ int main(int argc,char **argv) {
     }
     auto event=CreateEventW(nullptr,FALSE,FALSE,nullptr);
     unsigned evaluated=0, native_recovered=0, late_fg_evals=0, healthy_fg_evals=0, manual_fg_evals=0;
-    unsigned scaled_begin=0, fg_scaled_begin=0, transition_begin=0, manual_fg_scaled=0;
-    bool counters_initialized=false;
+    unsigned scaled_begin=0, fg_scaled_begin=0, transition_begin=0, prewarm_begin=0, retired_begin=0, manual_fg_scaled=0; unsigned long long bypass_begin=0;
+    bool counters_initialized=false, initial_scale_applied=initial_scale==0;
+    unsigned mfg_callbacks[5]={};
     for (unsigned frame=0;frame<400;++frame) {
         MSG msg; while (PeekMessageW(&msg,nullptr,0,0,PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
         check(allocator->Reset()); check(list->Reset(allocator,nullptr));
@@ -86,13 +92,20 @@ int main(int argc,char **argv) {
         }
         auto module=GetModuleHandleW(L"renodx-dlss5-super-anus.addon64");
         if (module) {
+            if (!initial_scale_applied) {
+                reinterpret_cast<void (*)(int)>(address(module,"NR_TEST_SCALE_RVA"))(initial_scale);
+                initial_scale_applied=true;
+            }
             auto *success=reinterpret_cast<std::atomic_uint *>(address(module,"NR_FINAL_SUCCESS_RVA"));
             auto *scaled=reinterpret_cast<std::atomic_uint *>(address(module,"NR_FINAL_SCALED_RVA"));
             auto *fg_scaled=reinterpret_cast<std::atomic_uint *>(address(module,"NR_FINAL_FG_SCALED_RVA"));
+            auto *fg_bypass=reinterpret_cast<std::atomic_ullong *>(address(module,"NR_FINAL_FG_BYPASS_RVA"));
             auto *transition_native=reinterpret_cast<std::atomic_uint *>(address(module,"NR_FINAL_TRANSITION_NATIVE_RVA"));
             if (!counters_initialized) {
                 scaled_begin=scaled->load(); fg_scaled_begin=fg_scaled->load();
-                transition_begin=transition_native->load(); counters_initialized=true;
+                transition_begin=transition_native->load(); bypass_begin=fg_bypass->load(); counters_initialized=true;
+                prewarm_begin=reinterpret_cast<std::atomic_uint *>(address(module,"NR_FINAL_PREWARM_RVA"))->load();
+                retired_begin=reinterpret_cast<std::atomic_uint *>(address(module,"NR_FINAL_RETIRED_RVA"))->load();
             }
             const auto before=success->load();
             using Callback=std::uint64_t (*)(void *,std::uint64_t,void *);
@@ -143,8 +156,13 @@ int main(int argc,char **argv) {
                     else late_fg_evals+=extra;
                 }
             } else {
-                const auto result=callback(list,0x12345678,parameters);
-                if ((result&255)!=1) return 7;
+                const unsigned generated=mfg_cadence ? (frame<134?2u:(frame<267?3u:4u)) : 1u;
+                for (unsigned index=1;index<=generated;++index) {
+                    parameters->Set("DLSSG.MultiFrameIndex",index);
+                    const auto result=callback(list,0x12345678,parameters);
+                    if ((result&255)!=1) return 7;
+                    ++mfg_callbacks[index];
+                }
             }
             evaluated+=success->load()-before;
             if (frame%30==0) printf("frame=%u NR-evaluations=%u\n",frame,evaluated);
@@ -154,7 +172,7 @@ int main(int argc,char **argv) {
         if (WaitForSingleObject(event,10000)!=WAIT_OBJECT_0) return 8;
         NativeCaptureTestTrigger(frame+1);
         if (scale_churn && (frame+1)%45==0) {
-            const unsigned scales[]={50,75,99,100,25,50,75,99};
+            const unsigned scales[]={50,75,99,100,101,125,150,75};
             const auto index=(frame+1)/45-1;
             if (module && index<8) {
                 reinterpret_cast<void (*)(int)>(address(module,"NR_TEST_SCALE_RVA"))(scales[index]);
@@ -167,7 +185,13 @@ int main(int argc,char **argv) {
     const unsigned scaled_total=counters_initialized ? reinterpret_cast<std::atomic_uint *>(address(GetModuleHandleW(L"renodx-dlss5-super-anus.addon64"),"NR_FINAL_SCALED_RVA"))->load()-scaled_begin : 0;
     const unsigned fg_scaled_total=counters_initialized ? reinterpret_cast<std::atomic_uint *>(address(GetModuleHandleW(L"renodx-dlss5-super-anus.addon64"),"NR_FINAL_FG_SCALED_RVA"))->load()-fg_scaled_begin : 0;
     const unsigned transition_total=counters_initialized ? reinterpret_cast<std::atomic_uint *>(address(GetModuleHandleW(L"renodx-dlss5-super-anus.addon64"),"NR_FINAL_TRANSITION_NATIVE_RVA"))->load()-transition_begin : 0;
-    printf("Scale routing: scaled=%u FrameGen-scaled=%u transition-native=%u.\n",scaled_total,fg_scaled_total,transition_total);
+    const unsigned long long bypass_total=counters_initialized ? reinterpret_cast<std::atomic_ullong *>(address(GetModuleHandleW(L"renodx-dlss5-super-anus.addon64"),"NR_FINAL_FG_BYPASS_RVA"))->load()-bypass_begin : 0;
+    const unsigned prewarm_total=counters_initialized ? reinterpret_cast<std::atomic_uint *>(address(GetModuleHandleW(L"renodx-dlss5-super-anus.addon64"),"NR_FINAL_PREWARM_RVA"))->load()-prewarm_begin : 0;
+    const unsigned retired_total=counters_initialized ? reinterpret_cast<std::atomic_uint *>(address(GetModuleHandleW(L"renodx-dlss5-super-anus.addon64"),"NR_FINAL_RETIRED_RVA"))->load()-retired_begin : 0;
+    printf("Scale routing: scaled=%u FrameGen-scaled=%u transition-native=%u transparent-native=%llu.\n",scaled_total,fg_scaled_total,transition_total,bypass_total);
+    printf("Resource churn: prewarmed=%u retired=%u.\n",prewarm_total,retired_total);
+    if (mfg_cadence) printf("MFG cadence callbacks: index1=%u index2=%u index3=%u index4=%u.\n",
+        mfg_callbacks[1],mfg_callbacks[2],mfg_callbacks[3],mfg_callbacks[4]);
     if (recovery) printf("Auto recovery: native NR=%u healthy FG NR=%u late FG NR=%u explicit manual FG NR=%u scaled=%u\n",native_recovered,healthy_fg_evals,late_fg_evals,manual_fg_evals,manual_fg_scaled);
     if (sr_handle) ngx(NVSDK_NGX_D3D12_ReleaseFeature(sr_handle));
     if (sr_parameters) ngx(NVSDK_NGX_D3D12_DestroyParameters(sr_parameters));
@@ -177,6 +201,10 @@ int main(int argc,char **argv) {
     if (sr_output) sr_output->Release();
     heap->Release(); swapchain->Release(); queue->Release(); device->Release(); factory->Release(); DestroyWindow(window);
     const bool scale_ok=!scale_churn || (scaled_total>0 && fg_scaled_total>0 && transition_total>0);
-    const bool recovery_ok=!recovery || (native_recovered>=370 && healthy_fg_evals>0 && late_fg_evals==0 && manual_fg_evals>0 && (!scale_churn || manual_fg_scaled>0));
-    return evaluated>=370 && scale_ok && recovery_ok ? 0 : 9;
+    const bool native_transparent_ok=recovery || scale_churn || bypass_total>=370;
+    const bool scaled_activity_ok=!scale_churn || evaluated>0;
+    const bool manual_route_ok=!recovery || (scale_churn ? manual_fg_scaled>0 : (manual_fg_scaled==0 && bypass_total>0));
+    const bool recovery_ok=!recovery || (native_recovered>=370 && healthy_fg_evals>0 && late_fg_evals==0 && manual_route_ok);
+    const bool cadence_ok=!mfg_cadence || (mfg_callbacks[1]&&mfg_callbacks[2]&&mfg_callbacks[3]&&mfg_callbacks[4]);
+    return native_transparent_ok && scaled_activity_ok && scale_ok && recovery_ok && cadence_ok ? 0 : 9;
 }

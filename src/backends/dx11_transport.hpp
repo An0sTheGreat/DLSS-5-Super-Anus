@@ -242,10 +242,13 @@ private:
                 else actual_bytes += allocation.SizeInBytes;
             }
         }
+        if (SUCCEEDED(hr)) error_stage_ = "CreateCommandAllocator";
         if (SUCCEEDED(hr)) hr = device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
             IID_PPV_ARGS(&slot.allocator));
+        if (SUCCEEDED(hr)) error_stage_ = "CreateCommandList";
         if (SUCCEEDED(hr)) hr = device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT,
             slot.allocator, nullptr, IID_PPV_ARGS(&slot.commands));
+        if (SUCCEEDED(hr)) error_stage_ = "initial command-list Close";
         if (SUCCEEDED(hr)) hr = slot.commands->Close();
         if (FAILED(hr)) { clear(slot); return hr; }
         slot.bytes = actual_bytes; allocated_ += actual_bytes;
@@ -278,6 +281,7 @@ private:
             hr = device11_->CreateShaderResourceView(source, &view, &slot.depth_view);
             if (SUCCEEDED(hr)) slot.depth_source = source;
         }
+        if (SUCCEEDED(hr)) error_stage_ = "none";
         return hr;
     }
     void convert_packed_depth(Slot &slot)
@@ -348,43 +352,75 @@ private:
             last_error_ = prepare_packed_depth(slot, frame.textures[depth]);
             if (FAILED(last_error_)) return Result::unsupported;
         }
+        error_stage_ = "CommandAllocator Reset";
         HRESULT hr = slot.allocator->Reset();
-        if (SUCCEEDED(hr)) hr = slot.commands->Reset(slot.allocator, nullptr);
-        if (FAILED(hr)) { poisoned_ = true; return Result::device_failure; }
+        if (SUCCEEDED(hr))
+        {
+            error_stage_ = "command-list Reset";
+            hr = slot.commands->Reset(slot.allocator, nullptr);
+        }
+        if (FAILED(hr))
+        {
+            last_error_ = hr;
+            clear(slot); // retired and not submitted: rebuild this slot next frame
+            return Result::device_failure;
+        }
         Evaluation evaluation = {slot.commands, {}};
         for (unsigned i = 0; i < texture_count; ++i) evaluation.textures[i] = slot.resources12[i];
         const bool evaluated = record(user, evaluation);
+        error_stage_ = "recorded command-list Close";
         hr = slot.commands->Close();
-        if (FAILED(hr)) { poisoned_ = true; return Result::device_failure; }
-        if (!evaluated) return Result::evaluator_failed; // nothing submitted, native output untouched
+        if (FAILED(hr))
+        {
+            last_error_ = hr;
+            clear(slot); // Close failed before ExecuteCommandLists; no GPU ownership
+            return Result::device_failure;
+        }
+        if (!evaluated)
+        {
+            last_error_ = S_FALSE; error_stage_ = "consumer rejected recording";
+            return Result::evaluator_failed; // nothing submitted, native output untouched
+        }
         if (next_ == UINT64_MAX - 1) { poisoned_ = true; return Result::device_failure; }
         const UINT64 serial = ++next_;
         // Caller serializes the game's context at the interception boundary.
         // Honor its existing multithread protection without changing that mode.
         multithread_->Enter();
         if (packed_depth) convert_packed_depth(slot);
+        error_stage_ = "DX11 input copy";
         for (unsigned i = 0; i < texture_count; ++i)
             if (frame.textures[i] && i != output && !(packed_depth && i == depth))
                 context_->CopyResource(slot.resources11[i], frame.textures[i]);
         slot.completion = serial; // retain even if any subsequent submission fails
+        error_stage_ = "DX11 signal input-ready fence";
         hr = context_->Signal(fence11_[0], serial);
         context_->Flush();
+        if (SUCCEEDED(hr)) error_stage_ = "DX12 wait input-ready fence";
         if (SUCCEEDED(hr)) hr = queue_->Wait(fence12_[0], serial);
         if (SUCCEEDED(hr))
         {
             ID3D12CommandList *lists[] = {slot.commands};
             queue_->ExecuteCommandLists(1, lists);
+            error_stage_ = "DX12 signal evaluation-done fence";
             hr = queue_->Signal(fence12_[1], serial);
         }
+        if (SUCCEEDED(hr)) error_stage_ = "DX11 wait evaluation-done fence";
         if (SUCCEEDED(hr)) hr = context_->Wait(fence11_[1], serial);
         if (SUCCEEDED(hr))
         {
+            error_stage_ = "DX11 output copy";
             context_->CopyResource(frame.textures[output], slot.resources11[output]);
+            error_stage_ = "DX11 signal copy-back fence";
             hr = context_->Signal(fence11_[2], serial);
             context_->Flush();
         }
         multithread_->Leave();
-        if (FAILED(hr)) { last_error_ = hr; poisoned_ = true; return Result::device_failure; }
+        if (FAILED(hr))
+        {
+            last_error_ = hr;
+            poisoned_ = true; // work may be in flight; retain all ownership
+            return Result::device_failure;
+        }
         last_error_ = S_OK; error_stage_ = "none";
         return Result::submitted; // queued, NOT proof of completed NR or delivery
     }

@@ -4,6 +4,52 @@ All notable public changes are documented here.
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-09-08
+
+### Added
+
+- Expanded internal Neural Rendering resolution from 25–100% to 25–150%, with
+  100% retained as the exact native bypass and supersampled NR reconstructed to
+  the game's unchanged output resolution.
+- Added saved and rebindable pass-count controls, defaulting to =/+ to increase
+  and -/_ to decrease, with 1–10 bounds and upper-right notifications.
+- Added adaptive GPU-memory admission that preserves headroom for the game,
+  Frame Generation, and NGX features.
+- Added observed source-frame and MFG-index context plus synthetic 2x/3x/4x
+  callback-cadence coverage.
+
+### Fixes
+
+- Separated stream configuration epochs from resource-allocation generations,
+  preventing preset, pass-count, and hook changes from retiring live native NR
+  features or leaving FrameGen stuck on `Waiting`.
+- Removed periodic render-thread diagnostics and repeated DXGI factory creation;
+  VRAM queries now reuse a cached adapter.
+- Bounded background maintenance to one destructive retirement per interval,
+  avoiding multi-resource cleanup spikes while NR and render locks are held.
+- Reused compatible multipass working sets instead of continuously prewarming
+  and retiring replacement resources.
+- Prewarmed complete working-texture groups before scaled multipass begins,
+  preventing a group from switching between scaled and native output midway.
+- Latched unsafe scale/pass configurations to the native path until settings
+  change, preventing repeated allocation and fallback flicker.
+- Expanded the in-flight resource limit according to pass count while retaining
+  GPU-memory headroom and a hard cache limit.
+- Grouped FrameGen transitions using the observed source frame and MFG index.
+- Restored a transparent upstream FrameGen call for manual hooks at native 100%.
+- Rebuilt affected idle DX11 transport slots after safe pre-submission failures
+  instead of permanently poisoning the session.
+
+### Miscellaneous
+
+- Renamed the visible ReShade tab to `RenoDX DLSS S_A` while retaining existing
+  preset and configuration identifiers.
+- Restricted detailed FrameGen diagnostics to explicit frame traces.
+- Added a build ID, canonical filename warning, configuration schema,
+  attachment-order report, and more precise stability diagnostics.
+- Added runtime-lifetime, multipass, scaling, controls, capture, and FrameGen
+  cadence regression coverage.
+
 ## [1.0.2] - 2026-09-07
 
 - Fixed reduced Neural Rendering scale remaining on the native path after a
@@ -48,7 +94,8 @@ All notable public changes are documented here.
 - Validated the Cost Scaler on NVIDIA hardware and WARP, plus focused DX11,
   lifetime, UI, hotkey, capture, and recovery fixtures.
 
-[Unreleased]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/An0sTheGreat/DLSS-5-Super-Anus/releases/tag/v1.0.0

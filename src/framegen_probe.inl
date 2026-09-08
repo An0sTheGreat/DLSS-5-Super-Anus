@@ -50,13 +50,27 @@ extern "C" __declspec(dllexport) std::uint64_t observed_framegen_callback(
     const auto callback_id = g_fg_observer_calls.fetch_add(1,std::memory_order_relaxed) + 1;
     // Only FG-bearing calls participate; ordinary native SR/NR callbacks keep
     // their original behavior. Query through the same verified Get slot below.
+    // Manual hook modes at native scale require no parameter inspection or
+    // TLS routing. Keep this path byte-for-byte equivalent to the upstream
+    // call so diagnostic probing cannot perturb otherwise stable FrameGen.
+    if (!auto_source_enabled() && !nr::uses_scaled_path(
+            g_scale_percent.load(std::memory_order_relaxed)))
+    {
+        g_framegen_transparent_bypass.fetch_add(1, std::memory_order_relaxed);
+        return original(command,feature,parameters);
+    }
     ID3D12Resource *fg_color = nullptr, *fg_hudless = nullptr;
+    unsigned multi_frame_index = UINT_MAX;
+    bool multi_frame_index_valid = false;
     if (parameters && command && feature) {
         const auto *vt = *reinterpret_cast<std::uintptr_t **>(parameters);
         using Get = unsigned (*)(void *,const char *,ID3D12Resource **);
+        using GetUnsigned = unsigned (*)(void *,const char *,unsigned *);
         const auto get = reinterpret_cast<Get>(vt[0x48/8]);
+        const auto get_unsigned = reinterpret_cast<GetUnsigned>(vt[0x60/8]);
         get(parameters,"DLSSG.Backbuffer",&fg_color);
         get(parameters,"DLSSG.HUDLess",&fg_hudless);
+        multi_frame_index_valid = get_unsigned(parameters,"DLSSG.MultiFrameIndex",&multi_frame_index) == 1;
     }
     const bool other_auto = (fg_color || fg_hudless) && auto_source_enabled();
     if (other_auto && !g_auto_source.enter_other(native_application_frame())) return 1;
@@ -65,18 +79,61 @@ extern "C" __declspec(dllexport) std::uint64_t observed_framegen_callback(
     if ((fg_color || fg_hudless) && g_framegen_transition_tls != TLS_OUT_OF_INDEXES)
     {
         previous_transition_frame = TlsGetValue(g_framegen_transition_tls);
-        framegen_transition = TlsSetValue(
-            g_framegen_transition_tls, reinterpret_cast<void *>(callback_id)) != FALSE;
+        FrameGenTransitionContext context {
+            native_application_frame(),callback_id,multi_frame_index,multi_frame_index_valid};
+        framegen_transition = TlsSetValue(g_framegen_transition_tls, &context) != FALSE;
+        const auto result = original(command,feature,parameters);
+        if (framegen_transition)
+            TlsSetValue(g_framegen_transition_tls, previous_transition_frame);
+        if (other_auto) g_auto_source.leave_other(GetTickCount64(),g_successful_evaluations.load()!=success_before);
+        const unsigned guard_after = tls ? tls[0x4B0] : 255;
+        g_fg_guard_on_entry.store(guard_before,std::memory_order_relaxed);
+        g_fg_guard_on_exit.store(guard_after,std::memory_order_relaxed);
+        if (!parameters || !command || !feature) return result;
+        const auto after = g_evaluation_calls.load(std::memory_order_relaxed);
+        if (g_trace_status.load(std::memory_order_relaxed) != 1) return result;
+        const auto *vtable = *reinterpret_cast<std::uintptr_t **>(parameters);
+        using GetResource = unsigned (*)(void *,const char *,ID3D12Resource **);
+        auto get_resource = reinterpret_cast<GetResource>(vtable[0x48/8]);
+        ID3D12Resource *backbuffer = nullptr, *hudless = nullptr;
+        get_resource(parameters,"DLSSG.Backbuffer",&backbuffer);
+        get_resource(parameters,"DLSSG.HUDLess",&hudless);
+        if (!backbuffer && !hudless) return result;
+        g_fg_parameter_calls.fetch_add(1,std::memory_order_relaxed);
+        const auto now = GetTickCount64();
+        auto next = g_fg_probe_next_tick.load(std::memory_order_relaxed);
+        if (now < next || !g_fg_probe_next_tick.compare_exchange_strong(next,now+2000,std::memory_order_relaxed)) return result;
+        ID3D12Resource *motion = nullptr, *depth = nullptr;
+        get_resource(parameters,"DLSSG.MVecs",&motion);
+        get_resource(parameters,"DLSSG.Depth",&depth);
+        DWORD foreground_process = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(),&foreground_process);
+        log_message(reshade::log::level::info,
+            "NR FG PROBE 3: focused=%u thread=%lu callback=%llu fg-inputs=%llu hook=%u passes=%u route=%u/%u/%u/%u guard=%u->%u eval-global=%u->%u index=%u valid=%u color=%p hudless=%p motion=%p depth=%p feature=0x%llx original-result=0x%llx.",
+            foreground_process==GetCurrentProcessId()?1u:0u,GetCurrentThreadId(),callback_id,g_fg_parameter_calls.load(),
+            static_cast<unsigned>(field<float>(g_target_module,0x270FB0)),field<unsigned>(g_target_module,0x266FA4),
+            static_cast<unsigned>(field<unsigned char>(g_target_module,0x27100C)),static_cast<unsigned>(field<unsigned char>(g_target_module,0x27100D)),
+            static_cast<unsigned>(field<unsigned char>(g_target_module,0x27100E)),static_cast<unsigned>(field<unsigned char>(g_target_module,0x27100F)),
+            guard_before,guard_after,before,after,multi_frame_index,multi_frame_index_valid?1u:0u,
+            backbuffer,hudless,motion,depth,feature,result);
+        ID3D12Resource *resources[] = {backbuffer,hudless,motion,depth};
+        for (unsigned i=0;i<4;++i) if (resources[i]) {
+            const auto desc = resources[i]->GetDesc();
+            log_message(reshade::log::level::info,
+                "NR FG PROBE resource=%u extent=%llux%u array=%u mips=%u format=%u samples=%u flags=0x%x.",
+                i,desc.Width,desc.Height,desc.DepthOrArraySize,desc.MipLevels,
+                static_cast<unsigned>(desc.Format),desc.SampleDesc.Count,static_cast<unsigned>(desc.Flags));
+        }
+        return result;
     }
     const auto result = original(command,feature,parameters);
-    if (framegen_transition)
-        TlsSetValue(g_framegen_transition_tls, previous_transition_frame);
     const auto after = g_evaluation_calls.load(std::memory_order_relaxed);
     if (other_auto) g_auto_source.leave_other(GetTickCount64(),g_successful_evaluations.load()!=success_before);
     const unsigned guard_after = tls ? tls[0x4B0] : 255;
     g_fg_guard_on_entry.store(guard_before,std::memory_order_relaxed);
     g_fg_guard_on_exit.store(guard_after,std::memory_order_relaxed);
     if (!parameters || !command || !feature) return result;
+    if (g_trace_status.load(std::memory_order_relaxed) != 1) return result;
 
     // These two Get overload slots are verified against 9A4B0, not inferred
     // from a different NGX SDK's overloaded C++ vtable ordering.
@@ -94,15 +151,15 @@ extern "C" __declspec(dllexport) std::uint64_t observed_framegen_callback(
     const auto now = GetTickCount64();
     auto next = g_fg_probe_next_tick.load(std::memory_order_relaxed);
     if (now < next || !g_fg_probe_next_tick.compare_exchange_strong(next,now+2000,std::memory_order_relaxed)) return result;
-    unsigned index = UINT_MAX;
-    const auto index_result = get_unsigned(parameters,"DLSSG.MultiFrameIndex",&index);
+    unsigned index = multi_frame_index;
+    const auto index_result = multi_frame_index_valid ? 1u : get_unsigned(parameters,"DLSSG.MultiFrameIndex",&index);
     ID3D12Resource *motion = nullptr, *depth = nullptr;
     get_resource(parameters,"DLSSG.MVecs",&motion);
     get_resource(parameters,"DLSSG.Depth",&depth);
     DWORD foreground_process = 0;
     GetWindowThreadProcessId(GetForegroundWindow(),&foreground_process);
     log_message(reshade::log::level::info,
-        "NR FG PROBE 2: focused=%u thread=%lu callback=%llu fg-inputs=%llu hook=%u passes=%u route=%u/%u/%u/%u guard=%u->%u eval-global=%u->%u index=%u index-result=0x%08x color=%p hudless=%p motion=%p depth=%p feature=0x%llx original-result=0x%llx.",
+        "NR FG PROBE 3: focused=%u thread=%lu callback=%llu fg-inputs=%llu hook=%u passes=%u route=%u/%u/%u/%u guard=%u->%u eval-global=%u->%u index=%u index-result=0x%08x color=%p hudless=%p motion=%p depth=%p feature=0x%llx original-result=0x%llx.",
         foreground_process==GetCurrentProcessId()?1u:0u,
         GetCurrentThreadId(),callback_id,g_fg_parameter_calls.load(),
         static_cast<unsigned>(field<float>(g_target_module,0x270FB0)),field<unsigned>(g_target_module,0x266FA4),

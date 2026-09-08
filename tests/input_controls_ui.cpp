@@ -11,7 +11,7 @@
 static bool focus = true;
 static std::array<bool,256> test_keys;
 static std::map<std::string,int> saved;
-static std::array<ImRect,4> buttons;
+static std::array<ImRect,6> buttons;
 static ImRect hdr_rect;
 static unsigned button_index = 0, requests = 0;
 static SHORT TestGetAsyncKeyState(int) { return 0; } // ReShade overlay blocks Windows input.
@@ -52,7 +52,7 @@ static bool TrackedCheckbox(const char *label, bool *value) {
 #undef GetForegroundWindow
 #undef GetWindowThreadProcessId
 void request_screenshot() { ++requests; }
-static std::array<bool,3> poll() { runtime.advance(); return poll_control_keys(&runtime); }
+static std::array<bool,5> poll() { runtime.advance(); return poll_control_keys(&runtime); }
 static void frame() {
     button_index = 0; ImGui::NewFrame();
     poll();
@@ -60,7 +60,7 @@ static void frame() {
     ImGui::SetNextWindowSize(ImVec2(780,500),ImGuiCond_Always);
     ImGui::Begin("controls",nullptr,ImGuiWindowFlags_NoSavedSettings);
     draw_input_controls();
-    assert(button_index == 4);
+    assert(button_index == 6);
     for (const auto &button : buttons) assert(button.Min.x >= 28 && button.Max.x <= 800);
     ImGui::End(); ImGui::Render();
 }
@@ -77,7 +77,7 @@ int main() {
     load_control_keys(); assert(control_keys() == nr::default_keys);
     assert(TestGetAsyncKeyState(VK_F8) == 0);
     frame(); frame();
-    assert(buttons[0].Min.y < buttons[1].Min.y && buttons[1].Min.y < buttons[2].Min.y && buttons[2].Min.y < buttons[3].Min.y);
+    for (std::size_t i = 1; i < buttons.size(); ++i) assert(buttons[i-1].Min.y < buttons[i].Min.y);
     click(buttons[2]); assert(g_rebinding_action == 0);
     test_keys[VK_F8] = true; frame(); assert(g_control_keys[0] == VK_F8 && saved["NRToggleKey"] == VK_F8);
     assert(!poll()[0]); test_keys[VK_F8] = false; assert(!poll()[0]);
@@ -96,10 +96,15 @@ int main() {
     io.WantTextInput = false; test_keys = {}; poll();
     io.WantCaptureKeyboard = true; test_keys[VK_F5] = true; assert(poll()[2]);
     test_keys = {}; poll();
+    click(buttons[4]); test_keys[VK_F9] = true; frame();
+    assert(g_control_keys[3] == VK_F9 && saved["PassCountIncreaseKey"] == VK_F9);
+    test_keys[VK_F9] = false; poll(); test_keys[VK_F9] = true; assert(poll()[3]);
+    test_keys = {}; poll();
     g_control_keys[0] = VK_F6; g_capture_hdr = false; load_control_keys();
     assert(g_control_keys[0] == VK_F8 && g_capture_hdr);
     saved["NRToggleKey"] = VK_F7; load_control_keys();
-    assert(g_control_keys[0] == VK_F7 && g_control_keys[1] == VK_MULTIPLY); // keep explicit key
+    assert(g_control_keys[0] == VK_F7 && g_control_keys[1] == VK_MULTIPLY &&
+        g_control_keys[3] == VK_F9 && g_control_keys[4] == VK_OEM_MINUS); // keep explicit keys
     ImGui::DestroyContext();
-    std::puts("Controls UI: screenshot-first order; runtime rebinding/F5 with blocked Windows input; duplicate rejection, cancel/focus, HDR checkbox, persistence and text-input suppression passed.");
+    std::puts("Controls UI: screenshot-first order; five runtime-rebindable actions, pass hotkeys, duplicate rejection, cancel/focus, HDR, persistence and text-input suppression passed.");
 }

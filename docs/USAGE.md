@@ -2,7 +2,7 @@
 
 ## Presets and operating mode
 
-Use the existing **RenoDX DLSS** preset buttons to select Off or Preset 1–3.
+Use the existing **RenoDX DLSS S_A** preset buttons to select Off or Preset 1–3.
 The most recently enabled preset is saved and restored on future launches.
 
 Hook Method controls where the add-on looks for a usable DLSS input. **Auto** is
@@ -14,11 +14,11 @@ their behavior depends on the game pipeline.
 
 | Setting | Range | Behavior |
 | --- | --- | --- |
-| Neural Rendering Resolution | 25–100% | Stages the internal NR evaluation scale. Press Apply to activate it. |
-| Reconstruction Mode | Direct / Matched Residual | Chooses how reduced NR output is combined with the native reference. |
+| Neural Rendering Resolution | 25–150% | Stages the internal NR evaluation scale. Below 100% reduces NR cost; above 100% supersamples NR. Press Apply to activate it. |
+| Reconstruction Mode | Direct / Matched Residual | Chooses how scaled NR output is combined with the native reference. |
 | Neural Transfer Strength | 0–200% | Controls the strength of the neural edit. At 0%, output returns to the native reference, though NR still runs. |
 | Neural Color Strength | 0–100% | Controls chromatic contribution relative to luminance/detail. |
-| Reconstruction Sharpness | 0–100% | Applies after reduced-resolution reconstruction. Disabled at applied 100%. |
+| Reconstruction Sharpness | 0–100% | Applies after scaled reconstruction. Disabled only at applied 100%. |
 
 At applied 100%, the replacement is fully bypassed and original Neural Rendering
 is used. The controls below the resolution setting become unavailable because
@@ -36,6 +36,19 @@ Change one control at a time and compare stable scenes. Lower scale values reduc
 the Neural Rendering workload but cannot preserve every detail from a full-scale
 network evaluation.
 
+Scaled multipass starts only after a complete pass group can be reserved. If
+the requested resolution/pass combination exceeds safe memory or in-flight
+resource capacity, the current configuration remains on the native 100% path
+until resolution, pass count, preset, or hook method changes. This deliberate
+stable fallback avoids alternating scaled/native frames.
+
+Manual hook modes at applied 100% use the untouched upstream FrameGen call.
+Scaled FrameGen and Auto routing remain game-dependent and experimental.
+
+Values above 100% increase internal NR detail and cost without changing the
+game's output resolution or DLSS Super Resolution setting. They can consume
+substantially more GPU time and working-texture memory.
+
 ## Controls
 
 | Default | Action |
@@ -43,9 +56,11 @@ network evaluation.
 | F5 | Capture an NR ON/OFF pair |
 | F6 | Toggle Neural Rendering |
 | F7 | Cycle Preset 1 → 2 → 3 → 1 |
+| = / + | Increase pass count (maximum 10) |
+| - / _ | Decrease pass count (minimum 1) |
 
 Click a binding in the Controls section, then press the replacement key. Preset
-and toggle actions display an upper-right notification for three seconds: one
+Preset, toggle, and pass-count actions display an upper-right notification for three seconds: one
 second at full opacity followed by a two-second fade.
 
 ## Screenshots
@@ -78,11 +93,14 @@ The add-on stores values in `ReShade.ini`, principally under
 - `NRToggleKey`
 - `PresetCycleKey`
 - `NRScreenshotKey`
+- `PassCountIncreaseKey`
+- `PassCountDecreaseKey`
 - `ScreenshotHDR`
 
 Edit these through the ReShade interface where possible. Close the game before
 manually changing the INI.
 
+- `ConfigSchema`
 ## Runtime API and Debug
 
 Runtime API and Debug are collapsed by default. Runtime API reports the observed

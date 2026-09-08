@@ -105,12 +105,12 @@ int main(int argc,char **) {
         gpu.upload(source,pixels); gpu.dispatch(source,native,source,source,2,1,1,w,h,w,h);
         const auto anchor=gpu.read(native);
         for(unsigned y=0;y<h;++y) for(unsigned x=0;x<w;++x) assert(memcmp(&anchor[y*w+x],&pixels[(y+1)*(w+2)+x+1],sizeof(Pixel))==0);
-        for(unsigned scale : {25u,33u,50u,75u,99u}) {
+        for(unsigned scale : {25u,33u,50u,75u,99u,101u,125u,150u}) {
             unsigned sw=std::max(2u,((w*scale+50)/100)&~1u),sh=std::max(2u,((h*scale+50)/100)&~1u);
             auto input=gpu.texture(sw,sh),output=gpu.texture(sw,sh);
-            gpu.dispatch(native,input,native,native,0,0,0,w,h,sw,sh);
+            gpu.dispatch(native,input,native,native,scale>100?3:0,0,0,w,h,sw,sh);
             const auto low=gpu.read(input);
-            for(unsigned y=0;y<sh;++y) for(unsigned x=0;x<sw;++x) {
+            if(scale<100) for(unsigned y=0;y<sh;++y) for(unsigned x=0;x<sw;++x) {
                 double sum=0; double x0=double(x)*w/sw,x1=double(x+1)*w/sw,y0=double(y)*h/sh,y1=double(y+1)*h/sh;
                 for(int j=int(floor(y0));j<int(ceil(y1));++j) for(int i=int(floor(x0));i<int(ceil(x1));++i)
                     sum+=anchor[j*w+i].r*(std::min(x1,double(i+1))-std::max(x0,double(i)))*(std::min(y1,double(j+1))-std::max(y0,double(j)));
@@ -149,5 +149,5 @@ int main(int argc,char **) {
             }
         }
     }
-    printf("PASS: %u GPU resolves; 25/33/50/75/99%% area reference, native-detail identity, transfer/color, SDR/HDR signed values, alpha, subrect sentinels, sharpening. Production DXIL; no NR model.\n",cases);
+    printf("PASS: %u GPU resolves; 25-150%% input/resolve paths, reduced-scale area reference, supersample area resolve, transfer/color, SDR/HDR signed values, alpha, subrect sentinels, sharpening. Production DXIL; no NR model.\n",cases);
 }

@@ -18,6 +18,9 @@ from pathlib import Path
 EXPECTED_SHA256 = "1d855cf226857dce890cffbf7206ba9b6497ce1d471b217c1c8b44b6cd5d27e9"
 EMBEDDED_FIRST_RVA = 0x1000
 NEW_SECTION_NAME = b".nr-v64"
+ADDON_NAME_POINTER_RVA = 0x2193D0
+ORIGINAL_ADDON_NAME = b"RenoDX DLSS\0"
+DISPLAY_ADDON_NAME = b"RenoDX DLSS S_A\0"
 
 PATCHES = {
     0x09C815: (bytes.fromhex("E8 26 57 01 00"), "native_evaluation_gate", "call"),
@@ -241,6 +244,19 @@ def main() -> None:
         destination = rva - EMBEDDED_FIRST_RVA
         payload[destination:destination + raw_size] = embedded.data[raw:raw + raw_size]
 
+    # Keep the official config/preset identifier untouched. Only redirect the
+    # exported NAME pointer to a display string in the injected section.
+    original_name_va = struct.unpack_from(
+        "<Q", base.data, base.rva_to_offset(ADDON_NAME_POINTER_RVA))[0]
+    original_name_rva = original_name_va - base.image_base
+    original_name_offset = base.rva_to_offset(original_name_rva)
+    if bytes(base.data[original_name_offset:original_name_offset + len(ORIGINAL_ADDON_NAME)]) != ORIGINAL_ADDON_NAME:
+        raise ValueError("official addon NAME string changed")
+    if not any(page + (entry & 0xFFF) == ADDON_NAME_POINTER_RVA and entry >> 12 == 10
+               for page, entries in relocation_blocks(base) for entry in entries):
+        raise ValueError("official addon NAME pointer is not covered by a DIR64 relocation")
+    display_name_rva = append_blob(payload, new_rva, DISPLAY_ADDON_NAME, 1)
+
     # Fix every absolute VA in the embedded component and retain its relocation
     # records at the uniformly shifted pages for normal ASLR processing.
     embedded_relocs = relocation_blocks(embedded)
@@ -325,6 +341,8 @@ def main() -> None:
     base.set_directory(1, imports_rva, len(import_blob))
     base.set_directory(3, exceptions_rva, len(exception_blob))
     base.set_directory(5, relocs_rva, len(reloc_blob))
+    base.patch(ADDON_NAME_POINTER_RVA, struct.pack("<Q", original_name_va),
+               struct.pack("<Q", base.image_base + display_name_rva))
 
     symbols = read_map_symbols(args.map_file, embedded.image_base)
     patches = PATCHES | CAPTURE_PATCHES if args.screenshot_capture else PATCHES

@@ -8,7 +8,8 @@ import hashlib
 import struct
 from pathlib import Path
 
-from patch_v6_addon import EXPECTED_SHA256, PATCHES, CAPTURE_PATCHES, PeImage
+from patch_v6_addon import (EXPECTED_SHA256, PATCHES, CAPTURE_PATCHES, PeImage,
+    ADDON_NAME_POINTER_RVA, ORIGINAL_ADDON_NAME, DISPLAY_ADDON_NAME)
 
 
 def imported_modules(image: PeImage) -> dict[str, set[str]]:
@@ -60,6 +61,8 @@ def main() -> None:
 
     # Existing sections may differ only at the verified hook sites.
     allowed_offsets: set[int] = set()
+    name_pointer_offset = base.rva_to_offset(ADDON_NAME_POINTER_RVA)
+    allowed_offsets.update(range(name_pointer_offset, name_pointer_offset + 8))
     patches = PATCHES | CAPTURE_PATCHES if args.screenshot_capture else PATCHES
     for rva, (expected, _, kind) in patches.items():
         assert bytes(base.data[base.rva_to_offset(rva):base.rva_to_offset(rva) + len(expected)]) == expected
@@ -81,6 +84,18 @@ def main() -> None:
                 actual_offsets.add(offset)
     assert actual_offsets <= allowed_offsets
     assert len(PATCHES) == 9
+
+    base_name_va = struct.unpack_from("<Q", base.data, name_pointer_offset)[0]
+    base_name_rva = base_name_va - base.image_base
+    assert bytes(base.data[base.rva_to_offset(base_name_rva):
+        base.rva_to_offset(base_name_rva) + len(ORIGINAL_ADDON_NAME)]) == ORIGINAL_ADDON_NAME
+    addon_name_va = struct.unpack_from("<Q", addon.data, addon.rva_to_offset(ADDON_NAME_POINTER_RVA))[0]
+    addon_name_rva = addon_name_va - addon.image_base
+    assert new_start <= addon_name_rva < new_end
+    assert bytes(addon.data[addon.rva_to_offset(addon_name_rva):
+        addon.rva_to_offset(addon_name_rva) + len(DISPLAY_ADDON_NAME)]) == DISPLAY_ADDON_NAME
+    # Internal config and preset namespaces intentionally remain compatible.
+    assert b"RENODX-DLSS" in bytes(addon.data)
 
     # V6.2 must not patch the official presentation callback or preset slider.
     # Those two hooks caused the V6/V6.1 hotkey crashes and XeFG misrouting.
@@ -159,7 +174,8 @@ def main() -> None:
         assert marker in strings
     if args.screenshot_capture:
         assert b".exr" not in strings and ".exr".encode("utf-16-le") not in strings
-        for marker in (b"NR CAPTURE TEST 3", b"NRToggleKey", b"PresetCycleKey", b"NRScreenshotKey", b"ScreenshotHDR",
+        for marker in (b"NR CAPTURE TEST 3", b"NRToggleKey", b"PresetCycleKey", b"NRScreenshotKey",
+                       b"PassCountIncreaseKey", b"PassCountDecreaseKey", b"NR PASSES: %u", b"ScreenshotHDR",
                        b"Capture NR ON/OFF pair", b"HDR mode", b"NR screenshot pair aborted", b"NR activity %s"):
             assert marker in strings
     else:
@@ -193,7 +209,7 @@ def main() -> None:
     kernel32.FreeLibrary(handle)
 
     print(f"{args.version} static validation passed (no GPU execution)")
-    print(f"official sections preserved outside {len(patches)} verified hook sites")
+    print(f"official sections preserved outside {len(patches)} verified hook sites and the display-name pointer")
     print(f"new section 0x{new_start:X}-0x{new_end:X}; entry 0x{entry:X}")
     print(f"sha256={hashlib.sha256(addon.data).hexdigest()}")
 
