@@ -1,6 +1,6 @@
 # DLAssAss 5 Tool
 
-**Current release: v.1.0.0**
+**Current release: v.1.0.1**
 
 DLAssAss 5 Tool is a local Windows game-library manager for installing the
 DLSS 5 Super Anus ReShade add-on, supplying your own NVIDIA DLSS runtime files,
