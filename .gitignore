@@ -2,6 +2,7 @@
 /build/
 /release/
 /evidence/
+/_archive/
 *.addon
 *.addon64
 *.dll

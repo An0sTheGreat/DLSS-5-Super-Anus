@@ -6,7 +6,7 @@
 
 namespace nr
 {
-enum class TraceKind : unsigned { gate, evaluation };
+enum class TraceKind : unsigned { gate, evaluation, framegen_entry, framegen_exit };
 struct FrameTraceEvent
 {
     TraceKind kind = TraceKind::gate;
@@ -19,6 +19,9 @@ struct FrameTraceEvent
     std::uint64_t command = 0, color = 0, output = 0;
     unsigned width = 0, height = 0, pass = 0;
     unsigned mfg_index = ~0u;
+    std::uint64_t callback = 0, gap = 0;
+    unsigned hook = 0, evaluations = 0, successes = 0;
+    bool original_called = false;
 };
 
 // Explicit ten-second capture only. No allocations, blocking locks, formatting,

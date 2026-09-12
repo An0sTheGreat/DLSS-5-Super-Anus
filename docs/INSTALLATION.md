@@ -25,7 +25,7 @@
 4. Download the latest `DLSS-5-Super-Anus-v*.zip` package from GitHub Releases.
 5. Extract `renodx-dlss5-super-anus.addon64` beside the ReShade DLL in the game
    directory, or into the add-on search path configured in ReShade.
-6. Start the game, open ReShade, and select the **RenoDX DLSS S_A** tab.
+6. Start the game, open ReShade, and select the **RenoDX DLSS_A** tab.
 7. Confirm that the add-on appears under ReShade's **Add-ons** tab and that the
    Runtime API section reports the expected presentation API.
 

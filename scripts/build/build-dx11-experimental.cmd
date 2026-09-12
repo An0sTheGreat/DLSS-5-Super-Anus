@@ -5,11 +5,26 @@ set "NR_OUTPUT=%ROOT%build\dx11-experimental.addon64"
 set "NR_PROBE_DEFINE="
 set "NR_VALIDATION_FLAGS="
 set "NR_TEST_DEFINE="
+set "NR_VULKAN_INCLUDE="
 if /i "%~1"=="game-test" (
  set "NR_OUTPUT=%ROOT%build\dx11-integrated-game-test.addon64"
  set "NR_PROBE_DEFINE=/DNR_DX11_GAME_TEST"
  set "NR_VALIDATION_FLAGS=--dx11-game-test"
  set "NR_TEST_DEFINE=/DNR_DX11_GAME_TEST"
+)
+if /i "%~1"=="dawnwalker-no-copyback" (
+ set "NR_OUTPUT=%ROOT%build\dawnwalker-no-copyback.addon64"
+ set "NR_PROBE_DEFINE=/DNR_DX11_GAME_TEST /DNR_DAWNWALKER_NO_COPYBACK_TEST"
+ set "NR_VALIDATION_FLAGS=--dx11-game-test"
+ set "NR_TEST_DEFINE=/DNR_DX11_GAME_TEST"
+)
+if /i "%~1"=="vulkan" (
+ set "NR_OUTPUT=%ROOT%build\vulkan-native-1\renodx-dlss5-super-anus.addon64"
+ set "NR_PROBE_DEFINE=/DNR_DX11_GAME_TEST /DNR_EXPERIMENTAL_VULKAN"
+ set "NR_VALIDATION_FLAGS=--dx11-game-test --experimental-vulkan"
+ set "NR_TEST_DEFINE=/DNR_DX11_GAME_TEST"
+ set NR_VULKAN_INCLUDE=/I "%ROOT%build\vulkan-headers-api\Include"
+ if not exist "%ROOT%build\vulkan-native-1" mkdir "%ROOT%build\vulkan-native-1" || exit /b 1
 )
 if /i "%~1"=="recycle-probe" (
  set "NR_OUTPUT=%ROOT%build\dx11-recycle-probe.addon64"
@@ -37,7 +52,7 @@ python "%ROOT%tools\binary_to_header.py" "%ROOT%build\dx11_depth_convert.cso" "%
 cl /nologo /std:c++20 /EHsc /W4 /WX /Fo"%ROOT%build\scale_history.obj" /Fe"%ROOT%build\scale_history.exe" "%ROOT%tests\scale_history.cpp" || exit /b 1
 "%ROOT%build\scale_history.exe" || exit /b 1
 cl /nologo /c /std:c++20 /MD /EHs-c- /O2 /Oi /GS- /GR- /guard:cf- /Zl /Brepro /W4 /WX /DNR_EXPERIMENTAL_DX11 %NR_PROBE_DEFINE% ^
- /I "%ROOT%build\minhook-api\include" /I "%ROOT%build\dlss-sdk-api\include" /I "C:\tmp\reshade-source\include" /I "C:\tmp\imgui-source" ^
+ /I "%ROOT%build\minhook-api\include" /I "%ROOT%build\dlss-sdk-api\include" %NR_VULKAN_INCLUDE% /I "C:\tmp\reshade-source\include" /I "C:\tmp\imgui-source" ^
  /Fo"%ROOT%build\neural_resolution_dx11.obj" "%ROOT%src\neural_resolution_addon.cpp" || exit /b 1
 ml64 /nologo /c /Fo"%ROOT%build\embedded_bridges_dx11.obj" "%ROOT%src\embedded_bridges.asm" || exit /b 1
 cl /nologo /c /MD /O2 /GS- /Zl /Brepro /Fo"%ROOT%build\\" "%ROOT%build\minhook-api\src\hook.c" "%ROOT%build\minhook-api\src\buffer.c" "%ROOT%build\minhook-api\src\trampoline.c" "%ROOT%build\minhook-api\src\hde\hde64.c" || exit /b 1
@@ -51,7 +66,7 @@ cl /nologo /std:c++20 /MD /EHsc /O2 /W4 /WX %NR_TEST_DEFINE% ^
 )
 link /nologo /dll /nodefaultlib /entry:combined_entry /dynamicbase /incremental:no /Brepro /opt:ref /opt:icf ^
  /map:"%ROOT%build\neural_resolution_dx11.map" /out:"%ROOT%build\neural_resolution_dx11_embedded.dll" ^
- "%ROOT%build\neural_resolution_dx11.obj" "%ROOT%build\embedded_bridges_dx11.obj" "%ROOT%build\hook.obj" "%ROOT%build\buffer.obj" "%ROOT%build\trampoline.obj" "%ROOT%build\hde64.obj" kernel32.lib Psapi.lib User32.lib ucrt.lib ole32.lib windowscodecs.lib uuid.lib || exit /b 1
+ "%ROOT%build\neural_resolution_dx11.obj" "%ROOT%build\embedded_bridges_dx11.obj" "%ROOT%build\hook.obj" "%ROOT%build\buffer.obj" "%ROOT%build\trampoline.obj" "%ROOT%build\hde64.obj" kernel32.lib Psapi.lib User32.lib ucrt.lib ole32.lib windowscodecs.lib uuid.lib bcrypt.lib || exit /b 1
 python "%ROOT%tools\patch_v6_addon.py" --base "%ROOT%updated-official-renodx-dlss.addon64" ^
  --embedded "%ROOT%build\neural_resolution_dx11_embedded.dll" --map "%ROOT%build\neural_resolution_dx11.map" ^
  --section-name .nr-dx11 --screenshot-capture --output "%NR_OUTPUT%" || exit /b 1

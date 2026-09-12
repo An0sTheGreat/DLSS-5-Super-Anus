@@ -39,8 +39,11 @@ int main(int argc, char **argv)
 {
     const bool sr_control = argc == 2 && !std::strcmp(argv[1], "--sr-control");
     const bool zero_intensity = argc == 2 && !std::strcmp(argv[1], "--direct-nr-zero");
-    const bool direct_nr = zero_intensity || (argc == 2 && !std::strcmp(argv[1], "--direct-nr"));
+    const bool half_scale = argc == 2 && !std::strcmp(argv[1], "--direct-nr-inplace-half");
+    const bool in_place = half_scale || (argc == 2 && !std::strcmp(argv[1], "--direct-nr-inplace"));
+    const bool direct_nr = zero_intensity || in_place || (argc == 2 && !std::strcmp(argv[1], "--direct-nr"));
     if (argc > 1 && !sr_control && !direct_nr) { std::puts("Usage: vulkan-ngx-probe [--sr-control|--direct-nr]"); return 1; }
+    vulkan_direct_probe::requested_scaling_ratio = half_scale ? 0.5f : 1.0f;
     std::printf("Requested feature: %s\n", sr_control ? "SR control (1)" : "prerelease NR (18)");
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     HMODULE loader = LoadLibraryExW(L"vulkan-1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -218,10 +221,10 @@ int main(int argc, char **argv)
         if (direct_nr)
         {
             images.create(instance, physical, device, gipa, vkGetDeviceProcAddr);
-            images.record_inputs(commands, parameters, zero_intensity ? 0.0f : 1.0f);
+            images.record_inputs(commands, parameters, zero_intensity ? 0.0f : 1.0f, in_place);
             if (!ngx(direct.evaluate(commands, feature, parameters, nullptr), "direct Vulkan NR evaluate"))
                 throw std::runtime_error("direct NR evaluation failed; recording discarded");
-            images.record_readback(commands);
+            images.record_readback(commands, in_place ? 0u : 3u);
         }
         check(vkEndCommandBuffer(commands), "end command buffer");
         VkFenceCreateInfo fci = {}; fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;

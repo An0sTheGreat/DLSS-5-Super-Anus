@@ -43,6 +43,13 @@ int main()
     nr::FrameTraceEvent event;
     event.tick = 101;
     event.frame = 0xfedcba9876543210ull;
+    event.kind = nr::TraceKind::framegen_exit;
+    event.callback = 0x100000001ull;
+    event.gap = 17;
+    event.hook = 3;
+    event.pass = 2;
+    event.evaluations = event.successes = 1;
+    event.original_called = true;
     for (unsigned i = 0; i < nr::FrameTrace::capacity + 17; ++i)
     {
         event.thread = i;
@@ -54,6 +61,9 @@ int main()
     {
         assert(trace.pop(10100, &event));
         assert(event.thread == i && event.frame == 0xfedcba9876543210ull);
+        assert(event.kind == nr::TraceKind::framegen_exit && event.callback == 0x100000001ull);
+        assert(event.gap == 17 && event.hook == 3 && event.pass == 2);
+        assert(event.evaluations == 1 && event.successes == 1 && event.original_called);
         if (i + 1 < nr::FrameTrace::capacity) assert(!trace.start(10101));
     }
     assert(trace.start(10101)); // A new capture needs complete drainage.

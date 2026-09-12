@@ -64,7 +64,7 @@ static void test_layout(float width, float font_scale, bool advanced_open,
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(57, 32));
         ImGui::SetNextWindowSize(ImVec2(width, 1326));
-        ImGui::Begin("RenoDX DLSS S_A", nullptr, ImGuiWindowFlags_NoSavedSettings);
+        ImGui::Begin("RenoDX DLSS_A", nullptr, ImGuiWindowFlags_NoSavedSettings);
         ImGui::LogToBuffer(0);
         ImGui::TextUnformatted("Reference setting");
         const float root_x = ImGui::GetItemRectMin().x;
@@ -205,7 +205,11 @@ int main()
     for (int staged : {25, 99, 100, 101, 150}) test_sharpness_interaction(available, applied, staged);
     assert(nr::clamp_scale_percent(0) == 25 && nr::clamp_scale_percent(999) == 150);
     assert(!nr::uses_scaled_path(100) && nr::uses_scaled_path(99) && nr::uses_scaled_path(101));
+    assert(!nr::uses_evaluation_working_path(100, 0));
+    for (unsigned pass = 1; pass < 10; ++pass) assert(nr::uses_evaluation_working_path(100, pass));
     assert(nr::scaled_extent(3840,150) == 5760 && nr::scaled_extent(2160,25) == 540);
+    assert(nr::motion_resample_filter(0) == 3);
+    for (unsigned pass = 1; pass < 10; ++pass) assert(nr::motion_resample_filter(pass) == 5);
     std::puts("Sharpness: 1260 click cases passed; only applied 100 disabled, 25-99 and 101-150 enabled when available; staged scale ignored; scale policy passed.");
     for (float width : {500.f, 763.f, 1100.f})
     for (float scale : {1.f, 1.5f, 2.f})

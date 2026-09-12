@@ -2,7 +2,7 @@
 
 ## Presets and operating mode
 
-Use the existing **RenoDX DLSS S_A** preset buttons to select Off or Preset 1–3.
+Use the existing **RenoDX DLSS_A** preset buttons to select Off or Preset 1–3.
 The most recently enabled preset is saved and restored on future launches.
 
 Hook Method controls where the add-on looks for a usable DLSS input. **Auto** is
@@ -20,9 +20,11 @@ their behavior depends on the game pipeline.
 | Neural Color Strength | 0–100% | Controls chromatic contribution relative to luminance/detail. |
 | Reconstruction Sharpness | 0–100% | Applies after scaled reconstruction. Disabled only at applied 100%. |
 
-At applied 100%, the replacement is fully bypassed and original Neural Rendering
-is used. The controls below the resolution setting become unavailable because
-they do not affect that path.
+At applied 100%, the first pass uses original Neural Rendering. In a multipass
+group, later evaluations use same-size working textures only to supply zero
+motion vectors; there is no second game-frame movement interval to reuse. The
+controls below the resolution setting remain unavailable because they do not
+affect the native-resolution path.
 
 Recommended baseline:
 
@@ -42,7 +44,8 @@ resource capacity, the current configuration remains on the native 100% path
 until resolution, pass count, preset, or hook method changes. This deliberate
 stable fallback avoids alternating scaled/native frames.
 
-Manual hook modes at applied 100% use the untouched upstream FrameGen call.
+Manual hook modes at applied 100% keep the first upstream FrameGen evaluation
+untouched; later configured NR passes receive zero motion vectors.
 Scaled FrameGen and Auto routing remain game-dependent and experimental.
 
 Values above 100% increase internal NR detail and cost without changing the

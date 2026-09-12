@@ -99,6 +99,9 @@ std::array<TrackedCommandList, kMaximumTrackedCommandLists> g_tracked_command_li
 std::array<TrackedQueue, kMaximumQueues> g_tracked_queues = {};
 std::size_t g_command_slot_cursor = 0;
 std::atomic_uint g_command_slots_recycled = 0, g_command_slots_exhausted = 0;
+#ifdef NR_DAWNWALKER_NO_COPYBACK_TEST
+std::atomic_uint g_no_copyback_log_generation = 0;
+#endif
 nr::ScaleHistory g_scale_history;
 nr::MultipassGroupPolicy g_multipass_groups;
 struct LocalMemoryAdapterCache
@@ -640,6 +643,8 @@ void collect_resources_locked(ULONGLONG now, unsigned destruction_budget)
         if (record.active) recording_mask |= record.references.sets;
     unsigned active = 0, pinned = 0, retiring = 0, unsafe = 0, features = 0, pooled = 0;
     std::uint64_t bytes = 0;
+    const bool keep_working_sets = nr_enabled() && (nr::uses_scaled_path(g_scale_percent.load()) ||
+        g_observed_pass_count.load(std::memory_order_relaxed) > 1);
     for (std::size_t i = 0; i < g_resource_sets.size(); ++i)
     {
         auto &set = g_resource_sets[i];
@@ -649,7 +654,7 @@ void collect_resources_locked(ULONGLONG now, unsigned destruction_budget)
         // rebound without reallocating the large textures.
         if (set.pooled)
         {
-            if (!nr_enabled() || !nr::uses_scaled_path(g_scale_percent.load()) ||
+            if (!keep_working_sets ||
                 set.allocation_generation != g_scale_generation.load() ||
                 (now >= set.last_use && now - set.last_use >= 1000))
             {
@@ -739,7 +744,7 @@ void collect_resources_locked(ULONGLONG now, unsigned destruction_budget)
                         destroy_resource_set(set);
                         g_retired_sets.fetch_add(1, std::memory_order_relaxed);
                     }
-                    else if (nr_enabled() && nr::uses_scaled_path(g_scale_percent.load()) &&
+                    else if (keep_working_sets &&
                         set.allocation_generation == g_scale_generation.load())
                     {
                         pool_resource_set(set, now);
@@ -1260,7 +1265,9 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
     }
     g_evaluation_calls.fetch_add(1, std::memory_order_relaxed);
     const int scale_percent = g_scale_percent.load(std::memory_order_relaxed);
-    if (!nr::uses_scaled_path(scale_percent) || !g_lifetime_events_registered)
+    const unsigned evaluation_pass = field<unsigned>(input, 8);
+    if (!nr::uses_evaluation_working_path(scale_percent, evaluation_pass) ||
+        !g_lifetime_events_registered)
     {
         g_effective_scale.store(100, std::memory_order_relaxed);
         return original(input);
@@ -1271,7 +1278,6 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
     const auto framegen_frame = framegen_transition_frame();
     const bool framegen_route = framegen_frame != 0;
     const unsigned hook_method = static_cast<unsigned>(field<float>(g_target_module, 0x270FB0));
-    const unsigned evaluation_pass = field<unsigned>(input, 8);
     const bool route_transition = framegen_route ?
         transition_uses_native(generation, framegen_frame) :
         (hook_method >= 3 ? transition_uses_native_pass(generation, evaluation_pass,
@@ -1389,10 +1395,14 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
     const std::uint32_t work_height = nr::scaled_extent(display_height, scale_percent);
     if (work_width > nr::maximum_texture_extent || work_height > nr::maximum_texture_extent)
         return native_fallback("the requested internal Neural Rendering extent exceeds the D3D12 texture limit");
-    if (work_width == display_width && work_height == display_height)
+    if (work_width == display_width && work_height == display_height &&
+        nr::uses_scaled_path(scale_percent))
         return original(input);
 
     const unsigned pass_count = std::clamp(field<unsigned>(g_target_module,0x266FA4),1u,10u);
+    const unsigned native_passes = nr::uses_scaled_path(scale_percent) ? 0u : 1u;
+    const unsigned working_pass = evaluation_pass - native_passes;
+    const unsigned working_pass_count = std::max(1u, pass_count - native_passes);
     if (g_multipass_groups.blocked(generation))
     {
         if (evaluation_pass == 0)
@@ -1403,7 +1413,7 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
     const std::uint64_t group_token = framegen_route ? framegen_frame :
         g_native_last_frame.load(std::memory_order_relaxed);
     bool group_pressure = false;
-    if (evaluation_pass == 0 && pass_count > 1)
+    if (working_pass == 0 && working_pass_count > 1)
     {
         const auto color_format = writable_format(color_desc.texture.format);
         const auto output_format = writable_format(output_desc.texture.format);
@@ -1436,12 +1446,12 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
                 candidate.ui_format == ui_format && candidate.ui_alpha_format == ui_alpha_format)
                 ++compatible;
         }
-        const unsigned missing = pass_count > compatible ? pass_count - compatible : 0;
+        const unsigned missing = working_pass_count > compatible ? working_pass_count - compatible : 0;
         if (missing != 0 && size_valid && one_set <= UINT64_MAX / missing)
         {
             std::uint64_t usage = 0, budget = 0;
             const auto admission = query_local_memory(device,usage,budget) ?
-                nr::adaptive_memory_admission(used,usage,budget,pass_count) : nr::MemoryAdmission{};
+                nr::adaptive_memory_admission(used,usage,budget,working_pass_count) : nr::MemoryAdmission{};
             const auto cache_limit = admission.queried ? admission.cache_limit : kWorkingTextureBudget;
             g_adaptive_cache_limit.store(cache_limit,std::memory_order_relaxed);
             group_pressure = !allocation_fits(used,one_set*missing,cache_limit);
@@ -1461,7 +1471,7 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
             }
     }
     const bool native_group = g_multipass_groups.use_native(
-        generation, group_token, evaluation_pass, pass_count, group_pressure);
+        generation, group_token, working_pass, working_pass_count, group_pressure);
     if (native_group)
     {
         if (group_pressure)
@@ -1554,7 +1564,8 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
         0, 0, display_width, display_height, work_width, work_height,
         nr::input_resample_filter(scale_percent));
     dispatch_resample(cmd_list, set->source_motion_srv, set->work_motion_uav,
-        motion_x, motion_y, motion_width, motion_height, work_width, work_height, 3);
+        motion_x, motion_y, motion_width, motion_height, work_width, work_height,
+        nr::motion_resample_filter(evaluation_pass));
     dispatch_resample(cmd_list, set->source_depth_srv, set->work_depth_uav,
         depth_x, depth_y, depth_width, depth_height, work_width, work_height, 3);
     if (ui.handle != 0)
@@ -1648,23 +1659,39 @@ std::uint64_t __fastcall scaled_evaluate_body(void *input, unsigned call_site)
         log_text(reshade::log::level::info,
             "RenoDX Neural Resolution: [8/9 evaluation] scaled Neural Rendering evaluation returned successfully.");
 
-    cmd_list->barrier(set->work_output,
-        reshade::api::resource_usage::unordered_access,
-        reshade::api::resource_usage::shader_resource_non_pixel);
-    dispatch_resample(cmd_list, set->work_output_srv, set->source_output_uav,
-        0, 0, work_width, work_height, display_width, display_height,
-        g_resolve_mode.load() == 1 ? 1u : 4u,
-        static_cast<float>(g_sharpness_percent.load()) / 100.0f,
-        set->work_color_srv, set->native_color_srv, output_x, output_y,
-        static_cast<float>(g_transfer_percent.load()) / 100.0f,
-        static_cast<float>(g_color_percent.load()) / 100.0f);
-    cmd_list->barrier(output, reshade::api::resource_usage::unordered_access,
-        reshade::api::resource_usage::unordered_access);
+#ifdef NR_DAWNWALKER_NO_COPYBACK_TEST
+    const bool suppress_copyback = framegen_route && evaluation_pass != 0;
+#else
+    constexpr bool suppress_copyback = false;
+#endif
+    if (!suppress_copyback)
+    {
+        cmd_list->barrier(set->work_output,
+            reshade::api::resource_usage::unordered_access,
+            reshade::api::resource_usage::shader_resource_non_pixel);
+        dispatch_resample(cmd_list, set->work_output_srv, set->source_output_uav,
+            0, 0, work_width, work_height, display_width, display_height,
+            g_resolve_mode.load() == 1 ? 1u : 4u,
+            static_cast<float>(g_sharpness_percent.load()) / 100.0f,
+            set->work_color_srv, set->native_color_srv, output_x, output_y,
+            static_cast<float>(g_transfer_percent.load()) / 100.0f,
+            static_cast<float>(g_color_percent.load()) / 100.0f);
+        cmd_list->barrier(output, reshade::api::resource_usage::unordered_access,
+            reshade::api::resource_usage::unordered_access);
+    }
     cmd_list->barrier(set->native_color, reshade::api::resource_usage::shader_resource_non_pixel,
         reshade::api::resource_usage::unordered_access);
-    cmd_list->barrier(set->work_output,
-        reshade::api::resource_usage::shader_resource_non_pixel,
-        reshade::api::resource_usage::unordered_access);
+    if (!suppress_copyback)
+        cmd_list->barrier(set->work_output,
+            reshade::api::resource_usage::shader_resource_non_pixel,
+            reshade::api::resource_usage::unordered_access);
+#ifdef NR_DAWNWALKER_NO_COPYBACK_TEST
+    if (suppress_copyback &&
+        g_no_copyback_log_generation.exchange(generation,std::memory_order_relaxed) != generation)
+        log_message(reshade::log::level::info,
+            "NR DAWNWALKER A/B 1: pass=%u evaluated successfully; FrameGen caller-output copyback suppressed.",
+            evaluation_pass);
+#endif
     if (trace_this_call)
         log_message(reshade::log::level::info,
             "NR COST SCALER 1: resolve=%s sharpness=%d%% transfer=%d%% color=%d%%; native anchor preserved; output origin=%u/%u.",

@@ -4,6 +4,29 @@ All notable public changes are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Renamed both the exported add-on name and independently constructed ReShade overlay tab to `RenoDX DLSS_A`.
+
+### Added
+
+- Added an experimental native Vulkan path that appends Neural Rendering after
+  successful DLSS Super Resolution in the same Vulkan command buffer. The first
+  candidate is intentionally limited to 100% resolution and one NR pass.
+- Added a bounded Dawnwalker diagnostic trace that records paired DLSSG callback
+  entry/exit events, callback gaps, source frames, MFG indices, vendor returns,
+  selected hook/pass count, and injected NR evaluation counts.
+- Added a Dawnwalker A/B candidate that evaluates later FrameGen NR passes while
+  suppressing only their caller-output copyback, isolating copyback from the cost
+  of extra NR work inside the DLSSG callback.
+
+### Fixed
+
+- Zeroed motion vectors after the first pass of a multi-pass Neural Rendering
+  group at every internal resolution, including native 100%, preventing later
+  passes from reapplying motion that occurred only before the first evaluation.
+  The first pass at 100% remains on the untouched native path.
+
 ## [1.0.3] - 2026-09-08
 
 ### Added

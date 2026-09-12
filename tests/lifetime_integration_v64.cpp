@@ -176,7 +176,11 @@ int main()
     collect_resources_locked(2001);
     assert(pooled.active && pooled.pooled); // Supersampled NR is still a managed scaled path.
     g_scale_percent = 100;
+    g_observed_pass_count = 2;
     collect_resources_locked(2002);
+    assert(pooled.active && pooled.pooled);
+    g_observed_pass_count = 1;
+    collect_resources_locked(2003);
     assert(!pooled.active && g_pooled_sets == 0);
     g_scale_percent = 75;
     g_resource_sets = {};

@@ -26,6 +26,7 @@ The current public release is **v1.0.3**. Download the packaged add-on from the
 - Automatic recovery when a game temporarily stops submitting a usable native
   DLSS input.
 - Integrated experimental DX11-to-DX12 Neural Rendering bridge.
+- Experimental native Vulkan post-DLSS Neural Rendering at 100% and one pass.
 - F5 NR ON/OFF PNG pairs with SDR and HDR-aware capture modes.
 - Bounded resource caching, GPU-fence retirement, and guarded recreation.
 
@@ -35,7 +36,7 @@ The current public release is **v1.0.3**. Download the packaged add-on from the
 | --- | --- | --- |
 | DirectX 12 | Supported | Primary path; requires a compatible native DLSS SR/NR setup. |
 | DirectX 11 | Experimental | Integrated bridge; the game must expose usable native DLSS SR inputs. |
-| Vulkan | Not implemented | Source contains exploratory guards and probes only. |
+| Vulkan | Experimental | Native post-DLSS path; currently limited to 100% resolution and one NR pass. Unsupported settings preserve native output. |
 | DirectX 9 / OpenGL | Not supported | No Neural Rendering backend is present. |
 
 OptiScaler is optional, not required. Games without native DLSS inputs may need
@@ -53,7 +54,7 @@ bundled here.
    into the add-on search directory configured by ReShade.
 6. Do not stack the standalone DLSSNR Cost Scaler proxy or companion with this
    build. If one replaced NVIDIA's DLL, restore the genuine DLL first.
-7. Launch the game and open the **RenoDX DLSS S_A** tab.
+7. Launch the game and open the **RenoDX DLSS_A** tab.
 
 See [Installation](docs/INSTALLATION.md) for upgrade and troubleshooting notes.
 
@@ -61,8 +62,9 @@ See [Installation](docs/INSTALLATION.md) for upgrade and troubleshooting notes.
 
 - Start with **Matched Residual**, **75%**, transfer/color at **100%**, and
   sharpness at **0%**, then press **Apply**.
-- An applied value of **100%** bypasses the replacement and uses the original
-  Neural Rendering path. Resolve controls are disabled at 100%.
+- At **100%**, the first pass uses the original Neural Rendering path. Later
+  multipass evaluations substitute zero motion vectors to avoid temporal
+  mismatch. Resolve controls remain disabled at 100%.
 - Lower values change the internal Neural Rendering workload only; they do not
   change the game's output resolution or its DLSS Super Resolution setting.
 - Values above 100% supersample only the internal Neural Rendering evaluation,

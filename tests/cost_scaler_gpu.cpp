@@ -149,5 +149,15 @@ int main(int argc,char **) {
             }
         }
     }
-    printf("PASS: %u GPU resolves; 25-150%% input/resolve paths, reduced-scale area reference, supersample area resolve, transfer/color, SDR/HDR signed values, alpha, subrect sentinels, sharpening. Production DXIL; no NR model.\n",cases);
+    {
+        constexpr unsigned w=17,h=11;
+        auto source=gpu.texture(w,h),destination=gpu.texture(w,h);
+        std::vector<Pixel> motion(w*h);
+        for(std::size_t i=0;i<motion.size();++i) motion[i]={float(i+1),-float(i+2),.5f,1.f};
+        gpu.upload(source,motion); gpu.upload(destination,motion);
+        gpu.dispatch(source,destination,source,source,5,0,0,w,h,w,h);
+        for(const auto &p:gpu.read(destination)) assert(p.r==0&&p.g==0&&p.b==0&&p.a==0);
+        ++cases;
+    }
+    printf("PASS: %u GPU resolves; 25-150%% input/resolve paths, explicit zero-fill motion, reduced-scale area reference, supersample area resolve, transfer/color, SDR/HDR signed values, alpha, subrect sentinels, sharpening. Production DXIL; no NR model.\n",cases);
 }

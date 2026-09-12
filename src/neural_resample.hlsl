@@ -14,7 +14,7 @@ cbuffer ResampleConstants : register(b0)
     uint2 SourceOrigin;
     uint2 SourceExtent;
     uint2 DestinationSize;
-    uint FilterMode; // 0 area, 1 residual, 2 exact snapshot, 3 bilinear, 4 direct
+    uint FilterMode; // 0 area, 1 residual, 2 exact snapshot, 3 bilinear, 4 direct, 5 zero
     float Sharpness;
     uint2 DestinationOrigin;
     float TransferStrength;
@@ -59,6 +59,7 @@ void Resample(uint3 id : SV_DispatchThreadID)
     uint2 pixel = id.xy;
     if (any(pixel >= DestinationSize)) return;
     uint2 target = pixel + DestinationOrigin;
+    if (FilterMode == 5) { Destination[target] = 0; return; }
     if (FilterMode == 2) { Destination[target] = LoadClamped(int2(pixel)); return; }
     float2 position = (float2(pixel)+0.5)*float2(SourceExtent)/float2(DestinationSize)-0.5;
     if (FilterMode == 3) { Destination[target] = Bilinear(position); return; }

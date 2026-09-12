@@ -32,6 +32,9 @@ int main(int argc,char **argv) {
     char initial_scale_value[8]={};
     const unsigned initial_scale=GetEnvironmentVariableA("NR_TEST_INITIAL_SCALE",initial_scale_value,sizeof(initial_scale_value)) ?
         static_cast<unsigned>(std::strtoul(initial_scale_value,nullptr,10)) : 0;
+    char forced_context_value[8]={};
+    const bool forced_context=GetEnvironmentVariableA(
+        "NR_TEST_FORCED_FG_CONTEXT",forced_context_value,sizeof(forced_context_value))!=0;
     WNDCLASSW cls={}; cls.lpfnWndProc=DefWindowProcW; cls.hInstance=GetModuleHandleW(nullptr); cls.lpszClassName=L"NRFrameGenFixture";
     RegisterClassW(&cls);
     auto window=CreateWindowW(cls.lpszClassName,L"NR FrameGen callback test",WS_OVERLAPPEDWINDOW,100,100,360,240,nullptr,nullptr,cls.hInstance,nullptr);
@@ -203,7 +206,8 @@ int main(int argc,char **argv) {
     const bool scale_ok=!scale_churn || (scaled_total>0 && fg_scaled_total>0 && transition_total>0);
     const bool native_transparent_ok=recovery || scale_churn || bypass_total>=370;
     const bool scaled_activity_ok=!scale_churn || evaluated>0;
-    const bool manual_route_ok=!recovery || (scale_churn ? manual_fg_scaled>0 : (manual_fg_scaled==0 && bypass_total>0));
+    const bool manual_route_ok=!recovery || (forced_context ? manual_fg_scaled>0 :
+        (scale_churn ? manual_fg_scaled>0 : (manual_fg_scaled==0 && bypass_total>0)));
     const bool recovery_ok=!recovery || (native_recovered>=370 && healthy_fg_evals>0 && late_fg_evals==0 && manual_route_ok);
     const bool cadence_ok=!mfg_cadence || (mfg_callbacks[1]&&mfg_callbacks[2]&&mfg_callbacks[3]&&mfg_callbacks[4]);
     return native_transparent_ok && scaled_activity_ok && scale_ok && recovery_ok && cadence_ok ? 0 : 9;

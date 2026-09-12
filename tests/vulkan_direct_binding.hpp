@@ -7,10 +7,11 @@
 
 namespace vulkan_direct_probe
 {
+inline float requested_scaling_ratio = 1.0f;
 inline NVSDK_NGX_Result scaling_ratio(NVSDK_NGX_Parameter *parameters)
 {
     if (!parameters) return NVSDK_NGX_Result_FAIL_InvalidParameter;
-    parameters->Set("DLSSNR.ScalingRatio", 1.0f);
+    parameters->Set("DLSSNR.ScalingRatio", requested_scaling_ratio);
     return NVSDK_NGX_Result_Success;
 }
 
@@ -26,7 +27,7 @@ inline void creation_parameters(NVSDK_NGX_Parameter *parameters, unsigned width,
     parameters->Set("PerfQualityValue", 2);
     parameters->Set("DLSSNR.Hint.Render.Preset", 1u);
     parameters->Set("DLSSNRComputeScalingRatioCallback", reinterpret_cast<void *>(&scaling_ratio));
-    parameters->Set("DLSSNR.ScalingRatio", 1.0f); parameters->Set("DLSSNR.Scale", 1.0f);
+    parameters->Set("DLSSNR.ScalingRatio", requested_scaling_ratio); parameters->Set("DLSSNR.Scale", requested_scaling_ratio);
     parameters->Set("DLSSNR.Upscaling", 0);
 }
 inline HMODULE caller_module = nullptr;

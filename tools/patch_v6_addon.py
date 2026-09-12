@@ -20,7 +20,19 @@ EMBEDDED_FIRST_RVA = 0x1000
 NEW_SECTION_NAME = b".nr-v64"
 ADDON_NAME_POINTER_RVA = 0x2193D0
 ORIGINAL_ADDON_NAME = b"RenoDX DLSS\0"
-DISPLAY_ADDON_NAME = b"RenoDX DLSS S_A\0"
+DISPLAY_ADDON_NAME = b"RenoDX DLSS_A\0"
+# The upstream settings utility constructs its visible overlay title inline,
+# independently of the exported NAME pointer. Its SSO buffer has room for _A.
+OVERLAY_TITLE_PATCHES = {
+    0x00434B: (
+        bytes.fromhex("48 C7 05 62 9C 26 00 00 00 00 00"),
+        bytes.fromhex("C7 05 66 9C 26 00 5F 41 00 00 90"),
+    ),
+    0x004356: (
+        bytes.fromhex("48 C7 05 5F 9C 26 00 0B 00 00 00"),
+        bytes.fromhex("48 C7 05 5F 9C 26 00 0D 00 00 00"),
+    ),
+}
 
 PATCHES = {
     0x09C815: (bytes.fromhex("E8 26 57 01 00"), "native_evaluation_gate", "call"),
@@ -343,6 +355,8 @@ def main() -> None:
     base.set_directory(5, relocs_rva, len(reloc_blob))
     base.patch(ADDON_NAME_POINTER_RVA, struct.pack("<Q", original_name_va),
                struct.pack("<Q", base.image_base + display_name_rva))
+    for rva, (expected, replacement) in OVERLAY_TITLE_PATCHES.items():
+        base.patch(rva, expected, replacement)
 
     symbols = read_map_symbols(args.map_file, embedded.image_base)
     patches = PATCHES | CAPTURE_PATCHES if args.screenshot_capture else PATCHES

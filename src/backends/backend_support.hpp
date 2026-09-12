@@ -30,7 +30,11 @@ constexpr Support support(reshade::api::device_api api)
         return {"DX11", false, "NR unavailable: DX11-to-DX12 transport and input capture are not integrated."};
 #endif
     case device_api::vulkan:
+#ifdef NR_EXPERIMENTAL_VULKAN
+        return {"Vulkan", false, "Experimental native post-DLSS NR: 100% resolution and one pass only."};
+#else
         return {"Vulkan", false, "NR unavailable: Vulkan-to-DX12 transport and input capture are not integrated."};
+#endif
     case device_api::d3d9:
         return {"DX9", false, "NR unavailable: transport and a depth/motion input provider are required."};
     case device_api::opengl:
@@ -81,6 +85,11 @@ constexpr RuntimeStatus runtime_status(reshade::api::device_api presentation_api
     if (!lifetime_events)
         return {presentation.name, "Tracking unavailable",
             "Resolution controls require ReShade command-list lifetime events.", false};
+#ifdef NR_EXPERIMENTAL_VULKAN
+    if (presentation_api == reshade::api::device_api::vulkan)
+        return {presentation.name, "Vulkan native hook",
+            "Experimental post-DLSS NR supports 100% resolution and one pass. Unsupported settings preserve native output.", true};
+#endif
     if (tracked_dx12_evaluation)
         return {presentation.name, "DX12 evaluation observed",
             presentation.evaluator_available ? "" :

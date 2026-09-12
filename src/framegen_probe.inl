@@ -4,6 +4,7 @@
 std::atomic_ullong g_fg_observer_calls = 0;
 std::atomic_ullong g_fg_parameter_calls = 0;
 std::atomic_ullong g_fg_probe_next_tick = 0;
+std::atomic_ullong g_fg_last_entry_tick = 0;
 std::atomic_uint g_fg_guard_on_entry = 0, g_fg_guard_on_exit = 0;
 nr::AutoSourcePolicy g_auto_source;
 
@@ -53,11 +54,20 @@ extern "C" __declspec(dllexport) std::uint64_t observed_framegen_callback(
     // Manual hook modes at native scale require no parameter inspection or
     // TLS routing. Keep this path byte-for-byte equivalent to the upstream
     // call so diagnostic probing cannot perturb otherwise stable FrameGen.
-    if (!auto_source_enabled() && !nr::uses_scaled_path(
-            g_scale_percent.load(std::memory_order_relaxed)))
+    const bool transparent_bypass = !auto_source_enabled() && !nr::uses_scaled_path(
+        g_scale_percent.load(std::memory_order_relaxed));
+#ifdef NR_DAWNWALKER_NO_COPYBACK_TEST
+    constexpr bool force_framegen_context = true;
+#else
+    constexpr bool force_framegen_context = false;
+#endif
+    if (transparent_bypass)
     {
         g_framegen_transparent_bypass.fetch_add(1, std::memory_order_relaxed);
-        return original(command,feature,parameters);
+        // Keep the normal path untouched. An explicitly requested trace may
+        // inspect parameters below, but still never changes them or GPU work.
+        if (!force_framegen_context && !g_frame_trace.enabled())
+            return original(command,feature,parameters);
     }
     ID3D12Resource *fg_color = nullptr, *fg_hudless = nullptr;
     unsigned multi_frame_index = UINT_MAX;
@@ -72,15 +82,54 @@ extern "C" __declspec(dllexport) std::uint64_t observed_framegen_callback(
         get(parameters,"DLSSG.HUDLess",&fg_hudless);
         multi_frame_index_valid = get_unsigned(parameters,"DLSSG.MultiFrameIndex",&multi_frame_index) == 1;
     }
-    const bool other_auto = (fg_color || fg_hudless) && auto_source_enabled();
-    if (other_auto && !g_auto_source.enter_other(native_application_frame())) return 1;
+    const bool framegen_inputs = fg_color || fg_hudless;
+    const bool other_auto = framegen_inputs && auto_source_enabled();
+    const auto source_frame = framegen_inputs ? native_application_frame() : 0;
+    const auto entry_tick = GetTickCount64();
+    const auto previous_entry_tick = framegen_inputs ?
+        g_fg_last_entry_tick.exchange(entry_tick,std::memory_order_relaxed) : 0;
+    const auto entry_gap = previous_entry_tick ? entry_tick-previous_entry_tick : 0;
+    const auto trace_callback = [&](nr::TraceKind kind, std::uint64_t result, bool original_called)
+    {
+        if (!framegen_inputs || !g_frame_trace.enabled()) return;
+        nr::FrameTraceEvent event;
+        event.kind = kind;
+        event.tick = kind == nr::TraceKind::framegen_entry ? entry_tick : GetTickCount64();
+        event.gap = entry_gap;
+        event.thread = GetCurrentThreadId();
+        event.callback = callback_id;
+        event.frame = source_frame;
+        event.mfg_index = multi_frame_index_valid ? multi_frame_index : UINT_MAX;
+        event.hook = static_cast<unsigned>(field<float>(g_target_module,0x270FB0));
+        event.pass = field<unsigned>(g_target_module,0x266FA4);
+        event.command = reinterpret_cast<std::uint64_t>(command);
+        event.color = reinterpret_cast<std::uint64_t>(fg_color);
+        event.output = reinterpret_cast<std::uint64_t>(fg_hudless);
+        event.original_called = original_called;
+        event.evaluations = g_evaluation_calls.load(std::memory_order_relaxed)-before;
+        event.successes = g_successful_evaluations.load(std::memory_order_relaxed)-success_before;
+        event.result = result;
+        g_frame_trace.push(event);
+    };
+    trace_callback(nr::TraceKind::framegen_entry,0,false);
+    if (transparent_bypass && !force_framegen_context)
+    {
+        const auto result = original(command,feature,parameters);
+        trace_callback(nr::TraceKind::framegen_exit,result,true);
+        return result;
+    }
+    if (other_auto && !g_auto_source.enter_other(source_frame))
+    {
+        trace_callback(nr::TraceKind::framegen_exit,1,false);
+        return 1;
+    }
     void *previous_transition_frame = nullptr;
     bool framegen_transition = false;
     if ((fg_color || fg_hudless) && g_framegen_transition_tls != TLS_OUT_OF_INDEXES)
     {
         previous_transition_frame = TlsGetValue(g_framegen_transition_tls);
         FrameGenTransitionContext context {
-            native_application_frame(),callback_id,multi_frame_index,multi_frame_index_valid};
+            source_frame,callback_id,multi_frame_index,multi_frame_index_valid};
         framegen_transition = TlsSetValue(g_framegen_transition_tls, &context) != FALSE;
         const auto result = original(command,feature,parameters);
         if (framegen_transition)
@@ -89,6 +138,7 @@ extern "C" __declspec(dllexport) std::uint64_t observed_framegen_callback(
         const unsigned guard_after = tls ? tls[0x4B0] : 255;
         g_fg_guard_on_entry.store(guard_before,std::memory_order_relaxed);
         g_fg_guard_on_exit.store(guard_after,std::memory_order_relaxed);
+        trace_callback(nr::TraceKind::framegen_exit,result,true);
         if (!parameters || !command || !feature) return result;
         const auto after = g_evaluation_calls.load(std::memory_order_relaxed);
         if (g_trace_status.load(std::memory_order_relaxed) != 1) return result;
@@ -132,6 +182,7 @@ extern "C" __declspec(dllexport) std::uint64_t observed_framegen_callback(
     const unsigned guard_after = tls ? tls[0x4B0] : 255;
     g_fg_guard_on_entry.store(guard_before,std::memory_order_relaxed);
     g_fg_guard_on_exit.store(guard_after,std::memory_order_relaxed);
+    trace_callback(nr::TraceKind::framegen_exit,result,true);
     if (!parameters || !command || !feature) return result;
     if (g_trace_status.load(std::memory_order_relaxed) != 1) return result;
 

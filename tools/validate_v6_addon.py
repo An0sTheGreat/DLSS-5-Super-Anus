@@ -9,7 +9,8 @@ import struct
 from pathlib import Path
 
 from patch_v6_addon import (EXPECTED_SHA256, PATCHES, CAPTURE_PATCHES, PeImage,
-    ADDON_NAME_POINTER_RVA, ORIGINAL_ADDON_NAME, DISPLAY_ADDON_NAME)
+    ADDON_NAME_POINTER_RVA, ORIGINAL_ADDON_NAME, DISPLAY_ADDON_NAME,
+    OVERLAY_TITLE_PATCHES)
 
 
 def imported_modules(image: PeImage) -> dict[str, set[str]]:
@@ -45,6 +46,7 @@ def main() -> None:
     parser.add_argument("--addon", type=Path, required=True)
     parser.add_argument("--version", default="V6.4", choices=("V6.4", "V6.5", "V6.6"))
     parser.add_argument("--experimental-dx11", action="store_true")
+    parser.add_argument("--experimental-vulkan", action="store_true")
     parser.add_argument("--dx11-game-test", action="store_true")
     parser.add_argument("--screenshot-capture", action="store_true")
     args = parser.parse_args()
@@ -59,10 +61,15 @@ def main() -> None:
     entry = struct.unpack_from("<I", addon.data, addon.optional + 16)[0]
     assert new_start <= entry < new_end
 
-    # Existing sections may differ only at the verified hook sites.
+    # Existing sections may differ only at the verified hook and title sites.
     allowed_offsets: set[int] = set()
     name_pointer_offset = base.rva_to_offset(ADDON_NAME_POINTER_RVA)
     allowed_offsets.update(range(name_pointer_offset, name_pointer_offset + 8))
+    for rva, (expected, replacement) in OVERLAY_TITLE_PATCHES.items():
+        offset = base.rva_to_offset(rva)
+        assert bytes(base.data[offset:offset + len(expected)]) == expected
+        assert bytes(addon.data[offset:offset + len(replacement)]) == replacement
+        allowed_offsets.update(range(offset, offset + len(expected)))
     patches = PATCHES | CAPTURE_PATCHES if args.screenshot_capture else PATCHES
     for rva, (expected, _, kind) in patches.items():
         assert bytes(base.data[base.rva_to_offset(rva):base.rva_to_offset(rva) + len(expected)]) == expected
@@ -94,6 +101,7 @@ def main() -> None:
     assert new_start <= addon_name_rva < new_end
     assert bytes(addon.data[addon.rva_to_offset(addon_name_rva):
         addon.rva_to_offset(addon_name_rva) + len(DISPLAY_ADDON_NAME)]) == DISPLAY_ADDON_NAME
+    assert len(OVERLAY_TITLE_PATCHES) == 2
     # Internal config and preset namespaces intentionally remain compatible.
     assert b"RENODX-DLSS" in bytes(addon.data)
 
@@ -140,6 +148,9 @@ def main() -> None:
             allowed_new |= {"API-MS-WIN-CRT-MATH-L1-1-0.DLL", "OLE32.DLL"}
             assert imports["OLE32.DLL"] - base_imports.get("OLE32.DLL", set()) <= {
                 "CoCreateInstance", "CoInitializeEx", "CoUninitialize", "CreateStreamOnHGlobal", "GetHGlobalFromStream"}
+        if args.experimental_vulkan:
+            allowed_new.add("BCRYPT.DLL")
+            assert {"BCryptOpenAlgorithmProvider", "BCryptCreateHash", "BCryptHashData", "BCryptFinishHash"} <= imports["BCRYPT.DLL"]
         assert set(imports) - set(base_imports) <= allowed_new
 
     exception_rva, exception_size = addon.directory(3)
@@ -150,6 +161,9 @@ def main() -> None:
     assert begins[-1] < new_end
 
     strings = bytes(addon.data[addon.rva_to_offset(new_start):addon.rva_to_offset(new_start) + new_section[2]])
+    if args.experimental_vulkan:
+        for marker in (b"NR VULKAN NATIVE 1", b"same-command-buffer post-DLSS NR", b"exact nvngx_dlssnr.dll not found"):
+            assert marker in strings
     if args.dx11_game_test:
         assert args.experimental_dx11 and args.version == "V6.6"
         for marker in (b"NR INTEGRATED GAME TEST 2", b"DX11 game test: private NGX core shutdown result",
@@ -158,7 +172,10 @@ def main() -> None:
                        b"DX11 native SR bridge (awaiting NR evaluation)",
                        b"interception boundary: executable SDK", b"packed depth conversion setup"):
             assert marker in strings
-        for forbidden in (b"TEST ONLY:", b"recycle probe", b"replacement probe", b"NVSDK_NGX_VULKAN_Init_Ext2"):
+        forbidden_markers = [b"TEST ONLY:", b"recycle probe", b"replacement probe"]
+        if not args.experimental_vulkan:
+            forbidden_markers.append(b"NVSDK_NGX_VULKAN_Init_Ext2")
+        for forbidden in forbidden_markers:
             assert forbidden not in strings
     if args.experimental_dx11:
         assert args.version == "V6.6"
@@ -184,8 +201,8 @@ def main() -> None:
                       b"official preset commit did not consume"):
         assert forbidden not in strings
     if args.version in ("V6.5", "V6.6"):
-        for marker in (b"Runtime API",
-                       b"trace END", b"DX11-to-DX12 transport", b"Vulkan-to-DX12 transport"):
+        for marker in (b"Runtime API", b"trace END", b"DX11-to-DX12 transport",
+                       b"Vulkan native hook" if args.experimental_vulkan else b"Vulkan-to-DX12 transport"):
             assert marker in strings
     if args.version == "V6.6":
         assert b"NR UI REVISION 3" in strings
@@ -209,7 +226,7 @@ def main() -> None:
     kernel32.FreeLibrary(handle)
 
     print(f"{args.version} static validation passed (no GPU execution)")
-    print(f"official sections preserved outside {len(patches)} verified hook sites and the display-name pointer")
+    print(f"official sections preserved outside {len(patches)} verified hook sites and three display-name sites")
     print(f"new section 0x{new_start:X}-0x{new_end:X}; entry 0x{entry:X}")
     print(f"sha256={hashlib.sha256(addon.data).hexdigest()}")
 

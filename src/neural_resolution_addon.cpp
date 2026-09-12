@@ -54,6 +54,13 @@ extern "C" __declspec(dllexport) NVSDK_NGX_Result dx11_evaluate_c_dispatch(ID3D1
 extern "C" __declspec(dllexport) NVSDK_NGX_Result dx11_shutdown_dispatch(ID3D11Device *, unsigned *);
 extern "C" __declspec(dllexport) NVSDK_NGX_Result dx11_sdk_shutdown_dispatch(ID3D11Device *);
 #endif
+#ifdef NR_EXPERIMENTAL_VULKAN
+#include <bcrypt.h>
+#include <vulkan/vulkan.h>
+#include <nvsdk_ngx_params.h>
+#include <nvsdk_ngx_vk.h>
+#include <MinHook.h>
+#endif
 
 #ifndef NR_LIFETIME_TEST
 #pragma function(memcpy, memmove, memset, memcmp)
@@ -134,6 +141,7 @@ std::atomic_uint g_logged_existing_site_generation = 0;
 std::atomic_uint g_logged_success_generation = 0;
 std::atomic_uint g_logged_failure_generation = 0;
 std::atomic_uint64_t g_stream_signature = 0;
+std::atomic_uint g_observed_pass_count = 1;
 std::atomic_uint g_transition_generation = 0;
 std::atomic_uint64_t g_transition_native_frame = 0;
 std::atomic_uint g_transition_pass_mask = 0;
@@ -343,6 +351,7 @@ void observe_stream_configuration()
     if (g_target_module == nullptr) return;
     const int preset = field<int>(g_target_module, kPresetIndexRva);
     const unsigned passes = field<unsigned>(g_target_module, 0x266FA4);
+    g_observed_pass_count.store(nr::clamp_pass_count(passes), std::memory_order_relaxed);
     const auto hook = std::bit_cast<std::uint32_t>(field<float>(g_target_module, 0x270FB0));
     const std::uint64_t signature = 0x8000000000000000ull |
         (static_cast<std::uint64_t>(hook) << 24) |
@@ -416,7 +425,7 @@ void pump_frame_trace()
         deadline = now + 10000;
         g_trace_status.store(1);
         log_text(reshade::log::level::info,
-            "NR V6.6 trace START: 10 seconds, at most 4096 records; native gate and NR wrapper source-frame/MFG-index observations only, not GPU timings.");
+            "NR V6.6 trace START: 10 seconds, at most 4096 records; DLSSG callback entry/exit, native gate and NR wrapper observations only, not GPU timings.");
     }
     if (g_trace_status.load() == 0 || now < deadline || now < next_drain) return;
     g_trace_status.store(2);
@@ -429,11 +438,19 @@ void pump_frame_trace()
             log_message(reshade::log::level::info,
                 "NR V6.6 trace gate: ms=%llu thread=%u frame=%llu source=%u retry=%u allowed=%llu.",
                 event.tick, event.thread, event.frame, event.source, event.retry ? 1u : 0u, event.result);
-        else
+        else if (event.kind == nr::TraceKind::evaluation)
             log_message(reshade::log::level::info,
                 "NR V6.6 trace eval: ms=%llu thread=%u source-frame=%llu MFG-index=%u cmd=0x%llx color=0x%llx output=0x%llx extent=%ux%u pass=%u result=0x%llx (CPU wrapper return).",
                 event.tick, event.thread, event.frame, event.mfg_index, event.command,
                 event.color, event.output, event.width, event.height, event.pass, event.result);
+        else
+            log_message(reshade::log::level::info,
+                "NR FG trace %s: ms=%llu gap-ms=%llu thread=%u callback=%llu source-frame=%llu MFG-index=%u hook=%u passes=%u cmd=0x%llx color=0x%llx hudless=0x%llx original-called=%u injected=%u successful=%u result=0x%llx.",
+                event.kind == nr::TraceKind::framegen_entry ? "entry" : "exit",
+                event.tick, event.gap, event.thread, event.callback, event.frame,
+                event.mfg_index, event.hook, event.pass, event.command, event.color,
+                event.output, event.original_called ? 1u : 0u, event.evaluations,
+                event.successes, event.result);
     }
     if (emitted < 64)
     {
@@ -482,6 +499,9 @@ extern "C" __declspec(dllexport) std::uint64_t embedded_capture_api_codec(reshad
 }
 #ifdef NR_EXPERIMENTAL_DX11
 #include "backends/dx11_native_bridge.inl"
+#endif
+#ifdef NR_EXPERIMENTAL_VULKAN
+#include "backends/vulkan_native_backend.inl"
 #endif
 
 void __fastcall draw_inline_settings(void *setting)
@@ -532,6 +552,7 @@ void __fastcall draw_inline_settings(void *setting)
     {
         draw_runtime_api_section(status);
         draw_input_controls();
+        if (ImGui::Button("Capture Dawnwalker trace")) g_trace_requested.store(true);
         const unsigned capture_status = dx12::capture::status.load();
         constexpr const char *messages[] = {"", "Screenshot armed...", "Screenshot awaiting GPU completion...",
             "Writing screenshots...", "Screenshot pair saved.", "Screenshot unavailable/failed; see ReShade.log."};
@@ -569,6 +590,9 @@ void on_init_device(reshade::api::device *device)
     if (device == nullptr) return;
 #ifdef NR_EXPERIMENTAL_DX11
     if (device->get_api() == reshade::api::device_api::d3d11) dx11_native::start_discovery();
+#endif
+#ifdef NR_EXPERIMENTAL_VULKAN
+    if (device->get_api() == reshade::api::device_api::vulkan) vulkan_native::start_discovery();
 #endif
     const auto backend = nr::backends::support(device->get_api());
     log_message(reshade::log::level::info, "NR V6.6 backend: API=%s; %s", backend.name, backend.reason);
@@ -825,6 +849,10 @@ void draw_hotkey_overlay(reshade::api::effect_runtime *runtime)
 #ifdef NR_EXPERIMENTAL_DX11
     if (runtime && runtime->get_device()->get_api() == reshade::api::device_api::d3d11)
         dx11_native::install_hooks();
+#endif
+#ifdef NR_EXPERIMENTAL_VULKAN
+    if (runtime && runtime->get_device()->get_api() == reshade::api::device_api::vulkan)
+        vulkan_native::install_get_proc_address_hook();
 #endif
     probe_optional_xefg_path();
     pump_frame_trace();
@@ -1127,8 +1155,16 @@ extern "C" __declspec(dllexport) bool native_evaluation_gate(
 }
 
 extern "C" __declspec(dllexport) const char *NAME = "RenoDX Neural Resolution";
+#ifdef NR_EXPERIMENTAL_VULKAN
 extern "C" __declspec(dllexport) const char *DESCRIPTION =
-    "V6.6 release 1.0.3: isolated stream/resource epochs, bounded maintenance, persistent controls and 25-150% neural resolution.";
+    "V6.6 experimental Vulkan native post-DLSS NR (100%, one pass).";
+#elif defined(NR_DAWNWALKER_NO_COPYBACK_TEST)
+extern "C" __declspec(dllexport) const char *DESCRIPTION =
+    "V6.6 test 1.0.3-dawnwalker-no-copyback.2: later FrameGen pass copyback suppressed.";
+#else
+extern "C" __declspec(dllexport) const char *DESCRIPTION =
+    "V6.6 test 1.0.3-dawnwalker-trace.1: bounded DLSSG callback entry/exit tracing.";
+#endif
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 {
@@ -1168,7 +1204,13 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             if (left == 0) break;
         }
         log_message(reshade::log::level::info,
-            "NR BUILD ID: 1.0.3 module=%s config-schema=7.",
+#ifdef NR_EXPERIMENTAL_VULKAN
+            "NR BUILD ID: 1.0.3-vulkan-native.1 module=%s config-schema=7.",
+#elif defined(NR_DAWNWALKER_NO_COPYBACK_TEST)
+            "NR BUILD ID: 1.0.3-dawnwalker-no-copyback.2 module=%s config-schema=7.",
+#else
+            "NR BUILD ID: 1.0.3-dawnwalker-trace.1 module=%s config-schema=7.",
+#endif
             module_path[0] != 0 ? module_path : "<unknown>");
         if (!canonical)
             log_message(reshade::log::level::warning,
@@ -1268,6 +1310,15 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
             "NR FG ROUTE 5: source-frame/MFG-index context enabled; native manual hooks remain transparent; detailed probes require an explicit frame trace.");
         log_message(reshade::log::level::info,
             "NR AUTO RECOVERY 3: guarded native SR fallback after 750 ms without successful FrameGen NR; sticky in Auto for this process; original native gate and manual hooks preserved.");
+#ifdef NR_EXPERIMENTAL_VULKAN
+        vulkan_native::start_discovery();
+        log_text(reshade::log::level::warning,
+            "NR VULKAN NATIVE 1: experimental same-command-buffer post-DLSS NR enabled at 100%/one pass only; other settings preserve native Vulkan output.");
+#endif
+#ifdef NR_DAWNWALKER_NO_COPYBACK_TEST
+        log_message(reshade::log::level::warning,
+            "NR DAWNWALKER A/B 1: later FrameGen passes still evaluate, but their caller-output copyback is suppressed. Diagnostic only; visual corruption is expected.");
+#endif
 #ifdef NR_DX11_GAME_TEST
         log_text(reshade::log::level::info,
             "NR INTEGRATED GAME TEST 2: DX12 preserved; DX11 SDK-executable interception, packed-depth conversion and guarded lifecycle enabled; Debug collapsed by default; Vulkan/DX9/OpenGL native backends unavailable. OptiScaler optional.");

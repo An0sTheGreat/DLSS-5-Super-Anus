@@ -86,7 +86,7 @@ struct VulkanImageFixture
         }
         vkUnmapMemory(device, buffer_memory[0]);
     }
-    void record_inputs(VkCommandBuffer commands, NVSDK_NGX_Parameter *parameters, float intensity)
+    void record_inputs(VkCommandBuffer commands, NVSDK_NGX_Parameter *parameters, float intensity, bool in_place = false)
     {
         VkImageMemoryBarrier barriers[4] = {};
         for (unsigned i = 0; i < 4; ++i)
@@ -112,11 +112,12 @@ struct VulkanImageFixture
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
         }
         vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 4, barriers);
+        if (in_place) resources[0].ReadWrite = true;
         const char *names[] = { "Color", "MVec", "Depth", "Output" };
         for (unsigned i = 0; i < 4; ++i)
         {
             const auto prefix = std::string("DLSSNR.") + names[i];
-            parameters->Set(prefix.c_str(), static_cast<void *>(&resources[i]));
+            parameters->Set(prefix.c_str(), static_cast<void *>(&resources[in_place && i == 3 ? 0 : i]));
             parameters->Set((prefix + ".Subrect.BaseX").c_str(), 0u); parameters->Set((prefix + ".Subrect.BaseY").c_str(), 0u);
             parameters->Set((prefix + ".Subrect.Width").c_str(), width); parameters->Set((prefix + ".Subrect.Height").c_str(), height);
         }
@@ -129,13 +130,13 @@ struct VulkanImageFixture
         for (const char *key : { "Jitter.Offset.X", "Jitter.Offset.Y", "DLSSNR.JitterOffsetX", "DLSSNR.JitterOffsetY" }) parameters->Set(key, 0.0f);
         parameters->Set("DLSSNR.MVecScaleX", static_cast<float>(width)); parameters->Set("DLSSNR.MVecScaleY", static_cast<float>(height));
     }
-    void record_readback(VkCommandBuffer commands)
+    void record_readback(VkCommandBuffer commands, unsigned image_index = 3)
     {
         VkMemoryBarrier barrier = {}; barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT; barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
         vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
         VkBufferImageCopy copy = {}; copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }; copy.imageExtent = { width, height, 1 };
-        vkCmdCopyImageToBuffer(commands, images[3], VK_IMAGE_LAYOUT_GENERAL, buffers[1], 1, &copy);
+        vkCmdCopyImageToBuffer(commands, images[image_index], VK_IMAGE_LAYOUT_GENERAL, buffers[1], 1, &copy);
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
         vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
     }
