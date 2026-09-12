@@ -1,2 +1,0 @@
-# Same 216-frame input stream, without source-device replacement.
-frames 216

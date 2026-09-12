@@ -1,118 +1,107 @@
-# DLSS 5 Super Anus
+# DLAssAss 5 Tool
 
-An experimental 64-bit ReShade add-on that extends RenoDX DLSS with practical
-DLSS 5 Neural Rendering controls, cost scaling, presets, an integrated DX11
-bridge, and PNG screenshot pairs.
+**Current release: v.1.0.0**
 
-The current public release is **v1.0.3**. Download the packaged add-on from the
-[Releases](https://github.com/An0sTheGreat/DLSS-5-Super-Anus/releases) page.
+DLAssAss 5 Tool is a local Windows game-library manager for installing the
+DLSS 5 Super Anus ReShade add-on, supplying your own NVIDIA DLSS runtime files,
+installing ReShade with add-on support, and safely restoring replaced files.
 
-> This is an unofficial community project. It is not affiliated with or
-> endorsed by NVIDIA, RenoDX, ReShade, or any game developer.
-
-> [!IMPORTANT]
-> **You must supply your own `nvngx_dlss.dll` and `nvngx_dlssnr.dll`.** These
-> NVIDIA runtime files are required but are not included or redistributed by
-> this project. Obtain them from a legitimate game, driver, or software
-> installation for which you have permission to use the files.
+The original standalone DLSS 5 Super Anus project is preserved on the
+[`DLSS-5-Super-Anus-Legacy`](../../tree/DLSS-5-Super-Anus-Legacy) branch.
 
 ## Features
 
-- One add-on containing the RenoDX DLSS interface and Neural Rendering controls.
-- Neural Rendering resolution from 25% to 150%, staged behind an Apply button.
-- Matched Residual and Direct Reconstruction modes.
-- Adjustable neural transfer, color strength, and reconstruction sharpness.
-- Saved presets and rebindable controls.
-- Automatic recovery when a game temporarily stops submitting a usable native
-  DLSS input.
-- Integrated experimental DX11-to-DX12 Neural Rendering bridge.
-- F5 NR ON/OFF PNG pairs with SDR and HDR-aware capture modes.
-- Bounded resource caching, GPU-fence retirement, and guarded recreation.
+- Steam discovery and recursive scanning of user-selected drives or folders
+- Steam-style cover library and sortable Explorer-style table views
+- Graphics API detection using ReShade logs, executable imports, runtime files,
+  executable names, and bounded binary evidence
+- Explicit API selection for games supporting multiple graphics APIs
+- Installation of the latest official ReShade build with add-on support and no
+  shader packages
+- One-click installation of the bundled add-on and validated user-supplied DLSS
+  files
+- Per-game backups and one-click restoration of the latest installation
+- Game launching, folder access, renaming, hiding, and persistent view settings
+- Steam and GOG cover lookup with executable-icon fallback and local caching
 
-## Compatibility
+## Requirements
 
-| Runtime | Status | Notes |
-| --- | --- | --- |
-| DirectX 12 | Supported | Primary path; requires a compatible native DLSS SR/NR setup. |
-| DirectX 11 | Experimental | Integrated bridge; the game must expose usable native DLSS SR inputs. |
-| Vulkan | Not implemented | Source contains exploratory guards and probes only. |
-| DirectX 9 / OpenGL | Not supported | No Neural Rendering backend is present. |
+- 64-bit Windows 10 or Windows 11
+- A game supported by the included ReShade add-on
+- NVIDIA DLSS DLLs supplied by the user
+- Internet access for ReShade version checks and game-cover discovery
 
-OptiScaler is optional, not required. Games without native DLSS inputs may need
-a separate DLSS feeder and motion-estimation solution; those tools are not
-bundled here.
+The tool does not download or redistribute NVIDIA DLLs.
 
 ## Installation
 
-1. Close the game.
-2. Install a 64-bit ReShade build with add-on support.
-3. Supply compatible copies of `nvngx_dlss.dll` and `nvngx_dlssnr.dll`; they are
-   required and are not provided by this project.
-4. Back up and remove any older or standalone version of this add-on.
-5. Extract `renodx-dlss5-super-anus.addon64` beside the game's ReShade DLL, or
-   into the add-on search directory configured by ReShade.
-6. Do not stack the standalone DLSSNR Cost Scaler proxy or companion with this
-   build. If one replaced NVIDIA's DLL, restore the genuine DLL first.
-7. Launch the game and open the **RenoDX DLSS S_A** tab.
+1. Download `DLAssAss-5-Tool-win-x64.zip` from
+   [GitHub Releases](../../releases/latest).
+2. Extract the complete archive to a writable folder.
+3. Open the included `DLSS Files` folder.
+4. Add the NVIDIA DLLs you are legally permitted to use:
 
-See [Installation](docs/INSTALLATION.md) for upgrade and troubleshooting notes.
+   | File | Purpose |
+   | --- | --- |
+   | `nvngx_dlss.dll` | DLSS Super Resolution |
+   | `nvngx_dlssg.dll` | DLSS Frame Generation |
+   | `nvngx_dlssnr.dll` | DLSS Ray Reconstruction / Neural Rendering |
 
-## Quick usage
+5. Start `DLAssAss 5 Tool.exe`. The status bar confirms each valid DLL and
+   identifies missing or mismatched files.
 
-- Start with **Matched Residual**, **75%**, transfer/color at **100%**, and
-  sharpness at **0%**, then press **Apply**.
-- An applied value of **100%** bypasses the replacement and uses the original
-  Neural Rendering path. Resolve controls are disabled at 100%.
-- Lower values change the internal Neural Rendering workload only; they do not
-  change the game's output resolution or its DLSS Super Resolution setting.
-- Values above 100% supersample only the internal Neural Rendering evaluation,
-  then reconstruct it to the game's unchanged output resolution.
+## Using the tool
 
-Default controls:
+1. Select **Scan Steam** to find Steam games automatically, or select
+   **Add Search Directory** to scan another drive or folder.
+2. Select a game in Library View or Folder View.
+3. Review the detected executable, graphics API, ReShade state, add-on state,
+   and available DLSS features.
+4. If ReShade is missing, select **Install ReShade**. For a multi-API game,
+   choose the API you intend to launch so the correct proxy DLL is installed.
+5. Select **Install** to install the included add-on and every validated DLSS
+   DLL currently available in `DLSS Files`.
+6. Select **Play** to launch the detected game executable.
 
-| Key | Action |
-| --- | --- |
-| F5 | Capture an NR ON/OFF PNG pair |
-| F6 | Toggle Neural Rendering |
-| F7 | Cycle Preset 1 → 2 → 3 → 1 |
-| = / + | Increase Neural Rendering pass count |
-| - / _ | Decrease Neural Rendering pass count |
+ReShade installation uses the latest official full add-on build available from
+`reshade.me`, configures the selected API, and does not install shaders.
 
-All five keys can be rebound in the existing Controls section. See
-[Usage and configuration](docs/USAGE.md) for every setting and capture behavior.
+## Backups and restoration
 
-## Known limitations
+Before replacing a managed file, the tool creates a per-game backup under its
+local application-data directory. Select **Restore Latest** to restore the most
+recent manager backup for the selected game.
 
-- Compatibility varies by game, DLSS integration, driver, and ReShade build.
-- Lower Neural Rendering resolution necessarily reduces neural detail.
-- Values above 100% increase GPU workload and working-texture memory use.
-- Performance gains must be measured in-game; reconstruction and snapshot work
-  have their own cost.
-- HDR screenshots are SDR-rendered PNGs intended to resemble the displayed
-  image, not lossless HDR masters.
-- Frame-generation observations in the tests do not certify generated frames.
-- KCD2/XeFG flicker investigation is outside this release's scope.
+Settings, logs, backups, and cached covers are stored under
+`%LOCALAPPDATA%\DLSS5ManAger`. The legacy directory name is intentionally kept
+so upgrades preserve existing game libraries and backups.
 
-## Source and development
+## Important notes
 
-The repository includes the add-on source, shaders, focused tests, fixtures,
-patch/build tools, and development scripts. Large SDK/runtime payloads, local
-reverse-engineering databases, generated objects, test logs, and release
-binaries are intentionally excluded from Git.
+- Use ReShade's full add-on build only where appropriate; avoid multiplayer or
+  anti-cheat-protected games unless the game explicitly permits it.
+- Graphics API detection is evidence-based. Confirm the selected API when a game
+  offers multiple renderers.
+- Cover lookup may require a few moments after initial game discovery.
+- NVIDIA DLLs in `DLSS Files` and add-on payload binaries are ignored by Git.
 
-The current implementation notes and validation record are in
-[Cost Scaler v1](docs/NR_COST_SCALER_1.md). Build scripts are Windows developer
-harnesses and expect Visual Studio Build Tools, the Windows SDK, ReShade headers,
-Dear ImGui headers, the NVIDIA NGX/DLSS SDK, and MinHook. See
-[Building](docs/BUILDING.md) and the [scripts index](scripts/README.md).
+## Building from source
 
-## Credits and licensing
+Install the .NET 8 SDK on Windows, then run:
 
-- [RenoDX](https://github.com/clshortfuse/renodx) by Carlos Lopez Jr.
-- [DLSSNR Cost Scaler](https://github.com/xenmods/DLSSNR-Cost-Scaler) by xen.
-- [MinHook](https://github.com/TsudaKageyu/minhook) by Tsuda Kageyu and contributors.
-- [ReShade](https://github.com/crosire/reshade) by crosire and contributors.
+```powershell
+dotnet build .\DLAssAss5Tool.csproj -c Release
+dotnet run --project .\tests\DLAssAss5Tool.Tests.csproj -c Release
+```
 
-No project-wide license has been declared for original modifications. Included
-third-party material remains subject to its respective license; see
-[Third-party notices](THIRD_PARTY_NOTICES.md) and the `licenses` directory.
+To create a self-contained release, place the verified
+`renodx-dlss5-super-anus.addon64` in `Payload`, then run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\publish.ps1
+```
+
+The publisher refuses to include NVIDIA DLLs and validates the add-on payload
+against its pinned SHA-256 before creating the archive.
+
+Third-party attribution is available in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

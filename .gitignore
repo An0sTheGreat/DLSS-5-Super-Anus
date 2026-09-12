@@ -1,38 +1,35 @@
 # Build and release output
+bin/
+obj/
+/artifacts/
+/.tools/
 /build/
 /release/
 /evidence/
-*.addon
-*.addon64
+/_archive/
 *.dll
 *.exe
-*.obj
-*.lib
-*.exp
 *.pdb
-*.ilk
-*.map
-*.cso
+*.obj
+*.zip
+*.addon
+*.addon64
 
-# Local reverse-engineering and downloaded dependency trees
+# User-supplied and local payload files
+/DLSS Files/*.dll
+/Payload/*.addon64
+
+# Legacy analysis and dependency trees retained locally
 /.analysis-deps/
 /upstream-renodx/
 /ghidra_scripts/
 /extracted-chicken-shaders/
 /extracted-renodx-shaders/
-/analysis-*.c
-*.rep/
 
-# Historical internal planning notes
-/IMPLEMENTATION_PLAN_*.md
-
-# Game/ReShade runtime data
-ReShade.log
-ReShade (working).log
-/DLSS5 Screenshots/
-*.trace
-
-# Editor, compiler, and Python caches
+# Local workspace instructions and tooling state
+/.codex/
+/AGENTS.md
+/CLEANUP.md
 /.vs/
 /.vscode/
 /.idea/
@@ -40,13 +37,5 @@ __pycache__/
 *.py[cod]
 *.user
 *.suo
-*.VC.db
 .DS_Store
 Thumbs.db
-
-# Local scratch files
-*.tmp
-*.bak
-*.old
-*.orig
-*.zip

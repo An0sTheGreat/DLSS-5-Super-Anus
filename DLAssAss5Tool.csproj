@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>DLAssAss 5 Tool</AssemblyName>
+    <RootNamespace>DLSS5ManAger</RootNamespace>
+    <Product>DLAssAss 5 Tool</Product>
+    <ApplicationIcon>assets\icon_dark.ico</ApplicationIcon>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="Tests\**\*.cs" />
+    <Resource Include="assets\icon_dark.ico" />
+    <Resource Include="assets\icon_dark.png" />
+    <Resource Include="assets\logo_light.png" />
+    <Content Include="DLSS Files\README.md" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Payload\README.md" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
