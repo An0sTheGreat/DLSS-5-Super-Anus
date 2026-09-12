@@ -60,7 +60,7 @@ The tool does not download or redistribute NVIDIA DLLs.
 4. If ReShade is missing, select **Install ReShade**. For a multi-API game,
    choose the API you intend to launch so the correct proxy DLL is installed.
 5. Select **Install** to install the included add-on and every validated DLSS
-   DLL currently available in `DLSS Files`.
+   DLL currently available in `DLSS Files` beside the selected game executable.
 6. Select **Play** to launch the detected game executable.
 
 ReShade installation uses the latest official full add-on build available from

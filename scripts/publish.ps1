@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = "Stop"
 $managerRoot = Split-Path -Parent $PSScriptRoot
 $sourceAddon = Join-Path $managerRoot "Payload\renodx-dlss5-super-anus.addon64"
-$expectedAddonHash = "91350804D0654AA5F726201E28FB4AAEAA3C3DE0637526A49DC02970BFF3BA53"
+$expectedAddonHash = "1C61FCA1F75E5CC404AB81875682B8012B76700E70C186C6BAA5D2274A250F92"
 $publishDirectory = Join-Path $managerRoot "artifacts\publish"
 $archive = Join-Path $managerRoot "artifacts\DLAssAss-5-Tool-$Runtime.zip"
 $fullManagerRoot = [IO.Path]::GetFullPath($managerRoot) + [IO.Path]::DirectorySeparatorChar
@@ -46,6 +46,7 @@ $checksums = @(
 $checksums | Set-Content -LiteralPath (Join-Path $publishDirectory "SHA256SUMS.txt") -Encoding utf8
 
 if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
-Compress-Archive -Path (Join-Path $publishDirectory "*") -DestinationPath $archive
+& tar.exe -a -c -f $archive -C $publishDirectory .
+if ($LASTEXITCODE -ne 0) { throw "archive creation failed." }
 Write-Host "Published: $publishDirectory"
 Write-Host "Archive:   $archive"
