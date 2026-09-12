@@ -50,16 +50,20 @@ public sealed class GameAnalyzer
             .Where(path => !IsIgnoredExecutable(path))
             .OrderByDescending(SafeLength).ToArray();
 
-        var hasAddon = names.Any(name => name.EndsWith(".addon64", StringComparison.OrdinalIgnoreCase) &&
-            name.Contains("renodx-dlss", StringComparison.OrdinalIgnoreCase));
         var apis = DetectApis(names, executables, files);
         var graphicsApi = apis.Count == 0 ? "Unknown" : string.Join(" / ", apis);
         var executableDirectory = Path.GetDirectoryName(executables.FirstOrDefault());
-        var reshadeModules = executableDirectory is null ? [] : files
+        var installFiles = executableDirectory is null ? [] : files
             .Where(path => DirectoryPath.Comparer.Equals(Path.GetDirectoryName(path), executableDirectory))
-            .Where(ReShadeService.IsReShadeModule).ToArray();
-        var hasReShade = names.Contains("ReShade.ini") || names.Contains("ReShade.log") ||
-            Directory.Exists(Path.Combine(fullPath, "reshade-shaders")) || reshadeModules.Length > 0;
+            .ToArray();
+        var installNames = installFiles.Select(Path.GetFileName).OfType<string>()
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var hasAddon = installNames.Any(name => name.EndsWith(".addon64", StringComparison.OrdinalIgnoreCase) &&
+            name.Contains("renodx-dlss", StringComparison.OrdinalIgnoreCase));
+        var reshadeModules = installFiles.Where(ReShadeService.IsReShadeModule).ToArray();
+        var hasReShade = installNames.Contains("ReShade.ini") || installNames.Contains("ReShade.log") ||
+            executableDirectory is not null && Directory.Exists(Path.Combine(executableDirectory, "reshade-shaders")) ||
+            reshadeModules.Length > 0;
         var expectedProxy = ReShadeService.ExpectedProxyName(graphicsApi);
 
         var game = new GameEntry
@@ -72,9 +76,9 @@ public sealed class GameAnalyzer
                 !reshadeModules.Any(path => Path.GetFileName(path).Equals(expectedProxy, StringComparison.OrdinalIgnoreCase)),
             ReShadeModulePaths = reshadeModules,
             HasAddon = hasAddon,
-            HasDlss = names.Contains("nvngx_dlss.dll"),
-            HasDlssG = names.Contains("nvngx_dlssg.dll"),
-            HasDlssNr = names.Contains("nvngx_dlssnr.dll"),
+            HasDlss = installNames.Contains("nvngx_dlss.dll"),
+            HasDlssG = installNames.Contains("nvngx_dlssg.dll"),
+            HasDlssNr = installNames.Contains("nvngx_dlssnr.dll"),
             SteamAppId = FindSteamAppId(fullPath),
             GraphicsApi = graphicsApi
         };

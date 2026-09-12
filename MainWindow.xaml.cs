@@ -244,10 +244,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void Install_Click(object sender, RoutedEventArgs e)
     {
-        if (SelectedGame is null) { Show("Select a game first."); return; }
+        var game = SelectedGame;
+        if (game is null) { Show("Select a game first."); return; }
+        var targetDirectory = InstallerService.InstallDirectory(game.ExecutablePath);
+        if (targetDirectory is null) { Show("The selected game does not have a usable executable."); return; }
         if (!ThemedDialog.Confirm(this, "Confirm installation",
-            $"Install the add-on and available validated user-supplied DLSS files into:\n\n{SelectedGame.GameDirectory}")) return;
-        await RunOperation("Installing…", () => _installer.Install(SelectedGame.GameDirectory,
+            $"Install the add-on and available validated user-supplied DLSS files beside the selected executable:\n\n{targetDirectory}")) return;
+        await RunOperation("Installing…", () => _installer.Install(game.ExecutablePath!,
             DlssFilesDirectory, true));
     }
 
@@ -280,10 +283,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void Restore_Click(object sender, RoutedEventArgs e)
     {
-        if (SelectedGame is null) { Show("Select a game first."); return; }
+        var game = SelectedGame;
+        if (game is null) { Show("Select a game first."); return; }
         if (!ThemedDialog.Confirm(this, "Confirm restore",
             "Restore the files from this game's latest manager backup?")) return;
-        await RunOperation("Restoring…", () => _installer.RestoreLatest(SelectedGame.GameDirectory));
+        await RunOperation("Restoring…", () => _installer.RestoreLatest(game.ExecutablePath ?? ""));
     }
 
     private async Task RunOperation(string activity, Func<InstallResult> operation)

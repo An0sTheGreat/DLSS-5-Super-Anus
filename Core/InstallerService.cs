@@ -38,12 +38,15 @@ public sealed class InstallerService
         _payloadDirectory = payloadDirectory ?? Path.Combine(AppContext.BaseDirectory, "Payload");
     }
 
-    public InstallResult Install(string gameDirectory, string dlssDirectory, bool includeDlssFiles)
+    public InstallResult Install(string executablePath, string dlssDirectory, bool includeDlssFiles)
     {
         var addon = Path.Combine(_payloadDirectory, AddonName);
         if (!File.Exists(addon))
             return Fail($"Manager payload is missing: {addon}");
-        if (!Directory.Exists(gameDirectory)) return Fail("The selected game directory does not exist.");
+        var gameDirectory = InstallDirectory(executablePath);
+        if (gameDirectory is null) return Fail("The selected game executable does not exist.");
+        if (!HasReShade(gameDirectory))
+            return Fail("ReShade was not found beside the selected game executable. Install ReShade first.");
 
         var sources = new List<string> { addon };
         if (includeDlssFiles)
@@ -88,8 +91,10 @@ public sealed class InstallerService
         }
     }
 
-    public InstallResult RestoreLatest(string gameDirectory)
+    public InstallResult RestoreLatest(string executablePath)
     {
+        var gameDirectory = InstallDirectory(executablePath);
+        if (gameDirectory is null) return Fail("The selected game executable does not exist.");
         var gameBackupRoot = Path.Combine(_backupRoot, SafeName(gameDirectory));
         var backupDirectory = Directory.Exists(gameBackupRoot)
             ? Directory.EnumerateDirectories(gameBackupRoot).OrderByDescending(path => path).FirstOrDefault()
@@ -157,6 +162,28 @@ public sealed class InstallerService
     {
         using var stream = File.OpenRead(path);
         return Convert.ToHexString(SHA256.HashData(stream));
+    }
+
+    internal static string? InstallDirectory(string? executablePath)
+    {
+        try
+        {
+            return executablePath is not null && File.Exists(executablePath)
+                ? Path.GetDirectoryName(Path.GetFullPath(executablePath))
+                : null;
+        }
+        catch { return null; }
+    }
+
+    private static bool HasReShade(string directory)
+    {
+        try
+        {
+            return File.Exists(Path.Combine(directory, "ReShade.ini")) ||
+                File.Exists(Path.Combine(directory, "ReShade.log")) ||
+                Directory.EnumerateFiles(directory).Any(ReShadeService.IsReShadeModule);
+        }
+        catch { return false; }
     }
 
     private static string SafeName(string path)

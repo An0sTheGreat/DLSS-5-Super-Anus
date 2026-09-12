@@ -2,21 +2,25 @@ using DLSS5ManAger.Core;
 
 var root = Path.Combine(Path.GetTempPath(), "DLAssAss5Tool-" + Guid.NewGuid().ToString("N"));
 var game = Path.Combine(root, "steamapps", "common", "Game");
+var installDirectory = Path.Combine(game, "Bin", "Win64MasterMasterSteamPGO");
+var executable = Path.Combine(installDirectory, "game.exe");
 var payload = Path.Combine(root, "Payload");
 var dlss = Path.Combine(root, "DLSS Files");
 var backups = Path.Combine(root, "Backups");
 
 try
 {
-    Directory.CreateDirectory(game);
+    Directory.CreateDirectory(installDirectory);
     Directory.CreateDirectory(payload);
     Directory.CreateDirectory(dlss);
     File.WriteAllText(Path.Combine(root, "steamapps", "appmanifest_123.acf"),
         "\"AppState\" { \"appid\" \"123\" \"installdir\" \"Game\" }");
-    File.WriteAllText(Path.Combine(game, "ReShade.ini"), "[GENERAL]");
-    File.Copy(Environment.ProcessPath!, Path.Combine(game, "game.exe"));
-    File.AppendAllText(Path.Combine(game, "game.exe"), "d3d12.dll");
-    File.WriteAllText(Path.Combine(game, "nvngx_dlssnr.dll"), "original");
+    File.WriteAllText(Path.Combine(installDirectory, "ReShade.ini"), "[GENERAL]");
+    File.Copy(Environment.ProcessPath!, executable);
+    File.AppendAllText(executable, "d3d12.dll");
+    File.WriteAllText(Path.Combine(installDirectory, "nvngx_dlssnr.dll"), "original");
+    File.WriteAllText(Path.Combine(game, InstallerService.AddonName), "misplaced");
+    File.WriteAllText(Path.Combine(game, "nvngx_dlssg.dll"), "misplaced");
     File.WriteAllText(Path.Combine(payload, InstallerService.AddonName), "addon");
     File.WriteAllText(Path.Combine(dlss, "nvngx_dlssnr.dll"), "replacement");
 
@@ -25,6 +29,7 @@ try
     var service = new InstallerService(backups, payload);
     var analysis = analyzer.Analyze(game);
     Require(analysis.HasReShade, "ReShade detection failed.");
+    Require(!analysis.HasAddon && !analysis.HasDlssG, "Files away from the selected executable were treated as installed.");
     Require(analysis.IconSource is not null, "Executable icon extraction failed.");
     Require(analysis.GraphicsApi.Contains("DX12"), "Executable API detection failed.");
     Require(analysis.SteamAppId == "123", "Steam AppID detection failed.");
@@ -62,12 +67,15 @@ try
     Require(loaded.CustomGameNames.TryGetValue(game, out var customName) && customName == "Renamed Game",
         "Custom game name was not normalized and persisted.");
     Require(!loaded.IsLibraryView, "View preference was not persisted.");
-    Require(service.Install(game, dlss, true).Success, "Install failed.");
-    Require(File.ReadAllText(Path.Combine(game, "nvngx_dlssnr.dll")) == "replacement", "DLSS replacement failed.");
-    Require(File.Exists(Path.Combine(game, InstallerService.AddonName)), "Add-on was not installed.");
-    Require(service.RestoreLatest(game).Success, "Restore failed.");
-    Require(File.ReadAllText(Path.Combine(game, "nvngx_dlssnr.dll")) == "original", "Original DLSS file was not restored.");
-    Require(!File.Exists(Path.Combine(game, InstallerService.AddonName)), "New add-on was not removed by restore.");
+    Require(service.Install(executable, dlss, true).Success, "Install failed.");
+    Require(File.ReadAllText(Path.Combine(installDirectory, "nvngx_dlssnr.dll")) == "replacement", "DLSS replacement failed.");
+    Require(File.Exists(Path.Combine(installDirectory, InstallerService.AddonName)), "Add-on was not installed beside the executable.");
+    Require(File.ReadAllText(Path.Combine(game, InstallerService.AddonName)) == "misplaced", "Parent-folder files were modified.");
+    Require(service.RestoreLatest(executable).Success, "Restore failed.");
+    Require(File.ReadAllText(Path.Combine(installDirectory, "nvngx_dlssnr.dll")) == "original", "Original DLSS file was not restored.");
+    Require(!File.Exists(Path.Combine(installDirectory, InstallerService.AddonName)), "New add-on was not removed by restore.");
+    File.Delete(Path.Combine(installDirectory, "ReShade.ini"));
+    Require(!service.Install(executable, dlss, true).Success, "Install proceeded without ReShade beside the executable.");
     Console.WriteLine("PASS: paths, discovery, API/AppID analysis, covers, ReShade API mapping, preferences, install, backup, and restore");
 }
 finally
