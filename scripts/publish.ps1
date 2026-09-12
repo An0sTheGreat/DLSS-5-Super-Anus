@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = "Stop"
 $managerRoot = Split-Path -Parent $PSScriptRoot
 $sourceAddon = Join-Path $managerRoot "Payload\renodx-dlss5-super-anus.addon64"
-$expectedAddonHash = "1C61FCA1F75E5CC404AB81875682B8012B76700E70C186C6BAA5D2274A250F92"
+$expectedAddonHash = "2969EF62FD26DC122B154F4E76FD7195F04A5185086808559A552E913B2D3DFA"
 $publishDirectory = Join-Path $managerRoot "artifacts\publish"
 $archive = Join-Path $managerRoot "artifacts\DLAssAss-5-Tool-$Runtime.zip"
 $fullManagerRoot = [IO.Path]::GetFullPath($managerRoot) + [IO.Path]::DirectorySeparatorChar
