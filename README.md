@@ -6,6 +6,25 @@ DLAssAss 5 Tool is a local Windows game-library manager for installing the
 DLSS 5 Super Anus ReShade add-on, supplying your own NVIDIA DLSS runtime files,
 installing ReShade with add-on support, and safely restoring replaced files.
 
+## Current graphics API compatibility
+
+These statuses describe Neural Rendering in the included add-on. The manager
+can detect and install ReShade for additional APIs; that alone does not provide
+Neural Rendering support.
+
+| Graphics API | Status | Current scope |
+| --- | --- | --- |
+| ✅ DirectX 12 | Yes | Primary supported backend, including multipass and 25–150% NR resolution. Compatibility still varies by game. |
+| <img src="assets/compatibility-experimental.svg" width="18" height="18" alt="Orange warning"> DirectX 11 | Experimental | Native DLSS SR input capture through a private DX12 consumer; requires compatible inputs and runtime files. |
+| <img src="assets/compatibility-experimental.svg" width="18" height="18" alt="Orange warning"> Vulkan | Experimental | Native post-DLSS SR path, limited to one pass at 100% NR resolution and the validated NR runtime. No general non-DLSS Vulkan support. |
+| ❌ DirectX 10 | No | No native Neural Rendering backend. |
+| ❌ DirectX 9 | No | No native Neural Rendering backend. |
+| ❌ OpenGL | No | No native Neural Rendering backend. |
+
+API support does not guarantee correct results in every game. Continuous
+flickering has been reported in The Last of Us Part II with the current add-on
+and remains under investigation.
+
 The original standalone DLSS 5 Super Anus project is preserved on the
 [`DLSS-5-Super-Anus-Legacy`](../../tree/DLSS-5-Super-Anus-Legacy) branch.
 
